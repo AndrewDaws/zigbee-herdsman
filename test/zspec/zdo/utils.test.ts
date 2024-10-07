@@ -15,11 +15,11 @@ describe('ZDO Utils', () => {
         [Zdo.ClusterId.CHALLENGE_REQUEST, Zdo.ClusterId.CHALLENGE_RESPONSE],
         [Zdo.ClusterId.NODE_DESCRIPTOR_REQUEST, Zdo.ClusterId.NODE_DESCRIPTOR_RESPONSE],
         [Zdo.ClusterId.NETWORK_ADDRESS_REQUEST, Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE],
-        [Zdo.ClusterId.END_DEVICE_ANNOUNCE, null],
-        [Zdo.ClusterId.NWK_UNSOLICITED_ENHANCED_UPDATE_RESPONSE, null],
-        [Zdo.ClusterId.ACTIVE_ENDPOINTS_RESPONSE, null],
-        [Zdo.ClusterId.CHALLENGE_RESPONSE, null],
-        [0x7999, null],
+        [Zdo.ClusterId.END_DEVICE_ANNOUNCE, undefined], // not a request
+        [Zdo.ClusterId.NWK_UNSOLICITED_ENHANCED_UPDATE_RESPONSE, undefined],
+        [Zdo.ClusterId.ACTIVE_ENDPOINTS_RESPONSE, undefined],
+        [Zdo.ClusterId.CHALLENGE_RESPONSE, undefined],
+        [0x7999, undefined],
     ])('Gets response cluster ID for request %s', (request, response) => {
         expect(Zdo.Utils.getResponseClusterId(request)).toStrictEqual(response);
     });
@@ -185,7 +185,7 @@ describe('ZDO Utils', () => {
                 networkManager: 0,
                 reserved1: 0,
                 reserved2: 0,
-                stackComplianceResivion: 0,
+                stackComplianceRevision: 0,
             },
         ],
         [
@@ -200,7 +200,7 @@ describe('ZDO Utils', () => {
                 networkManager: 0,
                 reserved1: 0,
                 reserved2: 0,
-                stackComplianceResivion: 0,
+                stackComplianceRevision: 0,
             },
         ],
         [
@@ -215,7 +215,7 @@ describe('ZDO Utils', () => {
                 networkManager: 1,
                 reserved1: 0,
                 reserved2: 0,
-                stackComplianceResivion: 23,
+                stackComplianceRevision: 23,
             },
         ],
         [
@@ -230,7 +230,7 @@ describe('ZDO Utils', () => {
                 networkManager: 1,
                 reserved1: 0,
                 reserved2: 0,
-                stackComplianceResivion: 21,
+                stackComplianceRevision: 21,
             },
         ],
     ])('Gets & Creates server mask for %s', (value, expected) => {

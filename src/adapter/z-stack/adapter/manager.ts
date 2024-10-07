@@ -4,6 +4,8 @@ import {TsType} from '../../';
 import * as Models from '../../../models';
 import {Wait} from '../../../utils';
 import {logger} from '../../../utils/logger';
+import * as ZSpec from '../../../zspec';
+import * as Zdo from '../../../zspec/zdo';
 import * as ZnpConstants from '../constants';
 import {DevStates, NvItemsIds, ZnpCommandStatus} from '../constants/common';
 import * as ZStackModels from '../models';
@@ -16,6 +18,7 @@ import {AdapterBackup} from './adapter-backup';
 import {AdapterNvMemory} from './adapter-nv-memory';
 import {Endpoints} from './endpoints';
 import {ZnpVersion} from './tstype';
+import ZStackAdapter from './zStackAdapter';
 
 const NS = 'zh:adapter:zstack:manager';
 
@@ -33,12 +36,14 @@ export class ZnpAdapterManager {
     public backup: AdapterBackup;
 
     private znp: Znp;
+    private adapter: ZStackAdapter;
     private options: ZStackModels.StartupOptions;
     // @ts-expect-error initialized in `start()`
     private nwkOptions: Models.NetworkOptions;
 
-    public constructor(znp: Znp, options: ZStackModels.StartupOptions) {
+    public constructor(adapter: ZStackAdapter, znp: Znp, options: ZStackModels.StartupOptions) {
         this.znp = znp;
+        this.adapter = adapter;
         this.options = options;
         this.nv = new AdapterNvMemory(this.znp);
         this.backup = new AdapterBackup(this.znp, this.nv, this.options.backupPath);
@@ -275,7 +280,7 @@ export class ZnpAdapterManager {
         const deviceInfo = await this.znp.requestWithReply(Subsystem.UTIL, 'getDeviceInfo', {});
         if (deviceInfo.payload.devicestate !== DevStates.ZB_COORD) {
             logger.debug('starting adapter as coordinator', NS);
-            const started = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, 'stateChangeInd', {state: 9}, 60000);
+            const started = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, 'stateChangeInd', undefined, undefined, 9, 60000);
             await this.znp.request(Subsystem.ZDO, 'startupFromApp', {startdelay: 100}, undefined, undefined, [
                 ZnpCommandStatus.SUCCESS,
                 ZnpCommandStatus.FAILURE,
@@ -359,7 +364,7 @@ export class ZnpAdapterManager {
             await this.znp.request(Subsystem.APP_CNF, 'bdbSetChannel', {isPrimary: 0x0, channel: 0x0});
 
             /* perform bdb commissioning */
-            const started = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, 'stateChangeInd', {state: 9}, 60000);
+            const started = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, 'stateChangeInd', undefined, undefined, 9, 60000);
             await this.znp.request(Subsystem.APP_CNF, 'bdbStartCommissioning', {mode: 0x04});
             try {
                 await started.start().promise;
@@ -449,18 +454,23 @@ export class ZnpAdapterManager {
      * Registers endpoints before beginning normal operation.
      */
     private async registerEndpoints(): Promise<void> {
-        const activeEpResponse = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, 'activeEpRsp');
-        // eslint-disable-next-line @typescript-eslint/no-floating-promises
-        this.znp.request(Subsystem.ZDO, 'activeEpReq', {dstaddr: 0, nwkaddrofinterest: 0});
-        const activeEp = await activeEpResponse.start().promise;
+        const clusterId = Zdo.ClusterId.ACTIVE_ENDPOINTS_REQUEST;
+        const zdoPayload = Zdo.Buffalo.buildRequest(this.adapter.hasZdoMessageOverhead, clusterId, ZSpec.COORDINATOR_ADDRESS);
+        const response = await this.adapter.sendZdo(ZSpec.BLANK_EUI64, ZSpec.COORDINATOR_ADDRESS, clusterId, zdoPayload, false);
 
-        for (const endpoint of Endpoints) {
-            if (activeEp.payload.activeeplist.includes(endpoint.endpoint)) {
-                logger.debug(`endpoint '${endpoint.endpoint}' already registered`, NS);
-            } else {
-                logger.debug(`registering endpoint '${endpoint.endpoint}'`, NS);
-                await this.znp.request(Subsystem.AF, 'register', endpoint);
+        if (Zdo.Buffalo.checkStatus(response)) {
+            const activeEndpoints = response[1].endpointList;
+
+            for (const endpoint of Endpoints) {
+                if (activeEndpoints.includes(endpoint.endpoint)) {
+                    logger.debug(`endpoint '${endpoint.endpoint}' already registered`, NS);
+                } else {
+                    logger.debug(`registering endpoint '${endpoint.endpoint}'`, NS);
+                    await this.znp.request(Subsystem.AF, 'register', endpoint);
+                }
             }
+        } else {
+            throw new Zdo.StatusError(response[0]);
         }
     }
 

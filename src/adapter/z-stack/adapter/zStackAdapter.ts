@@ -5,32 +5,20 @@ import debounce from 'debounce';
 import * as Models from '../../../models';
 import {Queue, Wait, Waitress} from '../../../utils';
 import {logger} from '../../../utils/logger';
+import * as ZSpec from '../../../zspec';
 import {BroadcastAddress} from '../../../zspec/enums';
+import {EUI64} from '../../../zspec/tstypes';
 import * as Zcl from '../../../zspec/zcl';
-import {Status as ZdoStatus} from '../../../zspec/zdo';
+import * as Zdo from '../../../zspec/zdo';
+import * as ZdoTypes from '../../../zspec/zdo/definition/tstypes';
 import Adapter from '../../adapter';
 import * as Events from '../../events';
-import {
-    ActiveEndpoints,
-    AdapterOptions,
-    Coordinator,
-    CoordinatorVersion,
-    DeviceType,
-    LQI,
-    LQINeighbor,
-    NetworkOptions,
-    NetworkParameters,
-    NodeDescriptor,
-    RoutingTable,
-    RoutingTableEntry,
-    SerialPortOptions,
-    SimpleDescriptor,
-    StartResult,
-} from '../../tstype';
+import {AdapterOptions, CoordinatorVersion, NetworkOptions, NetworkParameters, SerialPortOptions, StartResult} from '../../tstype';
 import * as Constants from '../constants';
 import {Constants as UnpiConstants} from '../unpi';
 import {Znp, ZpiObject} from '../znp';
-import {ZpiObjectPayload} from '../znp/tstype';
+import Definition from '../znp/definition';
+import {isMtCmdAreqZdo} from '../znp/utils';
 import {ZnpAdapterManager} from './manager';
 import {ZnpVersion} from './tstype';
 
@@ -94,6 +82,8 @@ class ZStackAdapter extends Adapter {
 
     public constructor(networkOptions: NetworkOptions, serialPortOptions: SerialPortOptions, backupPath: string, adapterOptions: AdapterOptions) {
         super(networkOptions, serialPortOptions, backupPath, adapterOptions);
+        this.hasZdoMessageOverhead = false;
+        this.manufacturerID = Zcl.ManufacturerCode.TEXAS_INSTRUMENTS;
         this.znp = new Znp(this.serialPortOptions.path!, this.serialPortOptions.baudRate!, this.serialPortOptions.rtscts!);
 
         this.transactionID = 0;
@@ -127,7 +117,7 @@ class ZStackAdapter extends Adapter {
 
         // Old firmware did not support version, assume it's Z-Stack 1.2 for now.
         try {
-            this.version = (await this.znp.requestWithReply(Subsystem.SYS, 'version', {})).payload;
+            this.version = (await this.znp.requestWithReply(Subsystem.SYS, 'version', {})).payload as typeof this.version;
         } catch {
             logger.debug(`Failed to get zStack version, assuming 1.2`, NS);
             this.version = {transportrev: 2, product: 0, majorrel: 2, minorrel: 0, maintrel: 0, revision: ''};
@@ -145,10 +135,10 @@ class ZStackAdapter extends Adapter {
         this.queue = new Queue(concurrent);
 
         logger.debug(`Detected znp version '${ZnpVersion[this.version.product]}' (${JSON.stringify(this.version)})`, NS);
-        this.adapterManager = new ZnpAdapterManager(this.znp, {
+        this.adapterManager = new ZnpAdapterManager(this, this.znp, {
             backupPath: this.backupPath,
             version: this.version.product,
-            greenPowerGroup: this.greenPowerGroup,
+            greenPowerGroup: ZSpec.GP_GROUP_ID,
             networkOptions: this.networkOptions,
             adapterOptions: this.adapterOptions,
         });
@@ -165,7 +155,7 @@ class ZStackAdapter extends Adapter {
             await this.setTransmitPower(this.adapterOptions.transmitPower);
         }
 
-        return startResult;
+        return await startResult;
     }
 
     public async stop(): Promise<void> {
@@ -174,59 +164,48 @@ class ZStackAdapter extends Adapter {
     }
 
     public static async isValidPath(path: string): Promise<boolean> {
-        return Znp.isValidPath(path);
+        return await Znp.isValidPath(path);
     }
 
     public static async autoDetectPath(): Promise<string | undefined> {
-        return Znp.autoDetectPath();
+        return await Znp.autoDetectPath();
     }
 
-    public async getCoordinator(): Promise<Coordinator> {
-        return this.queue.execute<Coordinator>(async () => {
+    public async getCoordinatorIEEE(): Promise<string> {
+        return await this.queue.execute(async () => {
             this.checkInterpanLock();
-            const activeEpRsp = this.waitForAreqZdo('activeEpRsp');
-            await this.znp.request(Subsystem.ZDO, 'activeEpReq', {dstaddr: 0, nwkaddrofinterest: 0}, activeEpRsp.ID);
-            const activeEp = await activeEpRsp.start();
-
             const deviceInfo = await this.znp.requestWithReply(Subsystem.UTIL, 'getDeviceInfo', {});
 
-            const endpoints = [];
-            for (const endpoint of activeEp.payload.activeeplist) {
-                const simpleDescRsp = this.waitForAreqZdo('simpleDescRsp', {endpoint});
-                await this.znp.request(Subsystem.ZDO, 'simpleDescReq', {dstaddr: 0, nwkaddrofinterest: 0, endpoint}, simpleDescRsp.ID);
-                const simpleDesc = await simpleDescRsp.start();
-
-                endpoints.push({
-                    ID: simpleDesc.payload.endpoint,
-                    profileID: simpleDesc.payload.profileid,
-                    deviceID: simpleDesc.payload.deviceid,
-                    inputClusters: simpleDesc.payload.inclusterlist,
-                    outputClusters: simpleDesc.payload.outclusterlist,
-                });
-            }
-
-            return {
-                networkAddress: 0,
-                manufacturerID: 0,
-                ieeeAddr: deviceInfo.payload.ieeeaddr,
-                endpoints,
-            };
-        });
-    }
-
-    public async permitJoin(seconds: number, networkAddress?: number): Promise<void> {
-        const addrmode = networkAddress === undefined ? 0x0f : 0x02;
-        const dstaddr = networkAddress || 0xfffc;
-        await this.queue.execute<void>(async () => {
-            this.checkInterpanLock();
-            const payload = {addrmode, dstaddr, duration: seconds, tcsignificance: 0};
-            await this.znp.request(Subsystem.ZDO, 'mgmtPermitJoinReq', payload);
-            await this.setLED(seconds == 0 ? 'off' : 'on');
+            return deviceInfo.payload.ieeeaddr;
         });
     }
 
     public async getCoordinatorVersion(): Promise<CoordinatorVersion> {
         return {type: ZnpVersion[this.version.product], meta: this.version};
+    }
+
+    public async permitJoin(seconds: number, networkAddress?: number): Promise<void> {
+        const clusterId = Zdo.ClusterId.PERMIT_JOINING_REQUEST;
+        // `authentication`: TC significance always 1 (zb specs)
+        const zdoPayload = Zdo.Buffalo.buildRequest(this.hasZdoMessageOverhead, clusterId, seconds, 1, []);
+
+        if (networkAddress === undefined) {
+            await this.sendZdo(ZSpec.BLANK_EUI64, ZSpec.BroadcastAddress.DEFAULT, clusterId, zdoPayload, true);
+        } else {
+            // NOTE: `sendZdo` takes care of adjusting the payload as appropriate based on `networkAddress === 0` or not
+            const result = await this.sendZdo(ZSpec.BLANK_EUI64, networkAddress, clusterId, zdoPayload, false);
+
+            /* istanbul ignore next */
+            if (!Zdo.Buffalo.checkStatus(result)) {
+                // TODO: will disappear once moved upstream
+                throw new Zdo.StatusError(result[0]);
+            }
+        }
+
+        await this.queue.execute<void>(async () => {
+            this.checkInterpanLock();
+            await this.setLED(seconds == 0 ? 'off' : 'on');
+        });
     }
 
     public async reset(type: 'soft' | 'hard'): Promise<void> {
@@ -275,10 +254,19 @@ class ZStackAdapter extends Adapter {
          * this is currently not handled, the first nwkAddrRsp is taken.
          */
         logger.debug(`Request network address of '${ieeeAddr}'`, NS);
-        const response = this.waitForAreqZdo('nwkAddrRsp', {ieeeaddr: ieeeAddr});
-        await this.znp.request(Subsystem.ZDO, 'nwkAddrReq', {ieeeaddr: ieeeAddr, reqtype: 0, startindex: 0});
-        const result = await response.start();
-        return result.payload.nwkaddr;
+
+        const clusterId = Zdo.ClusterId.NETWORK_ADDRESS_REQUEST;
+        const zdoPayload = Zdo.Buffalo.buildRequest(this.hasZdoMessageOverhead, clusterId, ieeeAddr as EUI64, false, 0);
+
+        const result = await this.sendZdo(ieeeAddr, ZSpec.NULL_NODE_ID, clusterId, zdoPayload, false);
+
+        /* istanbul ignore else */
+        if (Zdo.Buffalo.checkStatus(result)) {
+            return result[1].nwkAddress;
+        } else {
+            // TODO: will disappear once moved upstream
+            throw new Zdo.StatusError(result[0]);
+        }
     }
 
     private supportsAssocRemove(): boolean {
@@ -299,69 +287,123 @@ class ZStackAdapter extends Adapter {
         }
     }
 
-    public async nodeDescriptor(networkAddress: number): Promise<NodeDescriptor> {
-        return this.queue.execute<NodeDescriptor>(async () => {
+    public async sendZdo(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: Zdo.ClusterId,
+        payload: Buffer,
+        disableResponse: true,
+    ): Promise<void>;
+    public async sendZdo<K extends keyof ZdoTypes.RequestToResponseMap>(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: K,
+        payload: Buffer,
+        disableResponse: false,
+    ): Promise<ZdoTypes.RequestToResponseMap[K]>;
+    public async sendZdo<K extends keyof ZdoTypes.RequestToResponseMap>(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: K,
+        payload: Buffer,
+        disableResponse: boolean,
+    ): Promise<ZdoTypes.RequestToResponseMap[K] | void> {
+        return await this.queue.execute(async () => {
             this.checkInterpanLock();
+
+            // stack-specific requirements
+            switch (clusterId) {
+                case Zdo.ClusterId.PERMIT_JOINING_REQUEST: {
+                    const finalPayload = Buffer.alloc(payload.length + 3);
+                    finalPayload.writeUInt8(ZSpec.BroadcastAddress[networkAddress] ? AddressMode.ADDR_BROADCAST : AddressMode.ADDR_16BIT, 0);
+                    // zstack uses AddressMode.ADDR_16BIT + ZSpec.BroadcastAddress.DEFAULT to signal "coordinator-only"
+                    finalPayload.writeUInt16LE(networkAddress === 0 ? ZSpec.BroadcastAddress.DEFAULT : networkAddress, 1);
+                    finalPayload.set(payload, 3);
+
+                    payload = finalPayload;
+                    break;
+                }
+
+                case Zdo.ClusterId.NWK_UPDATE_REQUEST: {
+                    // extra zeroes for empty nwkManagerAddr if necessary
+                    const zeroes = 9 - payload.length - 1; /* zstack doesn't have nwkUpdateId */
+                    const finalPayload = Buffer.alloc(payload.length + 3 + zeroes);
+                    finalPayload.writeUInt16LE(networkAddress, 0);
+                    finalPayload.writeUInt8(ZSpec.BroadcastAddress[networkAddress] ? AddressMode.ADDR_BROADCAST : AddressMode.ADDR_16BIT, 2);
+                    finalPayload.set(payload, 3);
+
+                    payload = finalPayload;
+                    break;
+                }
+
+                case Zdo.ClusterId.BIND_REQUEST:
+                case Zdo.ClusterId.UNBIND_REQUEST: {
+                    // extra zeroes for uint16 (in place of ieee when MULTICAST) and endpoint (not used when MULTICAST)
+                    const zeroes = 21 - payload.length;
+                    const finalPayload = Buffer.alloc(payload.length + 2 + zeroes);
+                    finalPayload.writeUInt16LE(networkAddress, 0);
+                    finalPayload.set(payload, 2);
+
+                    payload = finalPayload;
+                    break;
+                }
+
+                case Zdo.ClusterId.NETWORK_ADDRESS_REQUEST:
+                case Zdo.ClusterId.IEEE_ADDRESS_REQUEST: {
+                    // no modification necessary
+                    break;
+                }
+
+                default: {
+                    const finalPayload = Buffer.alloc(payload.length + 2);
+                    finalPayload.writeUInt16LE(networkAddress, 0);
+                    finalPayload.set(payload, 2);
+
+                    payload = finalPayload;
+                    break;
+                }
+            }
+
+            let waiter: ReturnType<typeof this.znp.waitFor> | undefined;
+
+            if (!disableResponse) {
+                const responseClusterId = Zdo.Utils.getResponseClusterId(clusterId);
+
+                /* istanbul ignore else */
+                if (responseClusterId) {
+                    const cmd = Definition[Subsystem.ZDO].find((c) => isMtCmdAreqZdo(c) && c.zdoClusterId === responseClusterId);
+                    assert(cmd, `Response for ZDO cluster ID '${responseClusterId}' not supported.`);
+
+                    waiter = this.znp.waitFor(
+                        UnpiConstants.Type.AREQ,
+                        Subsystem.ZDO,
+                        cmd.name,
+                        responseClusterId === Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE ? ieeeAddress : networkAddress,
+                        undefined,
+                        undefined,
+                    );
+                }
+            }
+
             try {
-                const result = await this.nodeDescriptorInternal(networkAddress);
-                return result;
+                await this.znp.requestZdo(clusterId, payload, waiter?.ID);
             } catch (error) {
-                logger.debug(`Node descriptor request for '${networkAddress}' failed (${error}), retry`, NS);
-                // Doing a route discovery after simple descriptor request fails makes it succeed sometimes.
-                // https://github.com/Koenkk/zigbee2mqtt/issues/3276
-                await this.discoverRoute(networkAddress);
-                const result = await this.nodeDescriptorInternal(networkAddress);
-                return result;
+                if (clusterId === Zdo.ClusterId.NODE_DESCRIPTOR_REQUEST) {
+                    // Discover route when node descriptor request fails
+                    // https://github.com/Koenkk/zigbee2mqtt/issues/3276
+                    logger.debug(`Discover route to '${networkAddress}' because node descriptor request failed`, NS);
+                    await this.discoverRoute(networkAddress);
+                    await this.znp.requestZdo(clusterId, payload, waiter?.ID);
+                } else {
+                    throw error;
+                }
             }
-        }, networkAddress);
-    }
 
-    private async nodeDescriptorInternal(networkAddress: number): Promise<NodeDescriptor> {
-        const response = this.waitForAreqZdo('nodeDescRsp', {nwkaddr: networkAddress});
-        const payload = {dstaddr: networkAddress, nwkaddrofinterest: networkAddress};
-        await this.znp.request(Subsystem.ZDO, 'nodeDescReq', payload, response.ID);
-        const descriptor = await response.start();
+            if (waiter) {
+                const response = await waiter.start().promise;
 
-        let type: DeviceType = 'Unknown';
-        const logicalType = descriptor.payload.logicaltype_cmplxdescavai_userdescavai & 0x07;
-        for (const [key, value] of Object.entries(Constants.ZDO.deviceLogicalType)) {
-            if (value === logicalType) {
-                if (key === 'COORDINATOR') type = 'Coordinator';
-                else if (key === 'ROUTER') type = 'Router';
-                else if (key === 'ENDDEVICE') type = 'EndDevice';
-                break;
+                return response.payload.zdo;
             }
-        }
-
-        return {manufacturerCode: descriptor.payload.manufacturercode, type};
-    }
-
-    public async activeEndpoints(networkAddress: number): Promise<ActiveEndpoints> {
-        return this.queue.execute<ActiveEndpoints>(async () => {
-            this.checkInterpanLock();
-            const response = this.waitForAreqZdo('activeEpRsp', {nwkaddr: networkAddress});
-            const payload = {dstaddr: networkAddress, nwkaddrofinterest: networkAddress};
-            await this.znp.request(Subsystem.ZDO, 'activeEpReq', payload, response.ID);
-            const activeEp = await response.start();
-            return {endpoints: activeEp.payload.activeeplist};
-        }, networkAddress);
-    }
-
-    public async simpleDescriptor(networkAddress: number, endpointID: number): Promise<SimpleDescriptor> {
-        return this.queue.execute<SimpleDescriptor>(async () => {
-            this.checkInterpanLock();
-            const responsePayload = {nwkaddr: networkAddress, endpoint: endpointID};
-            const response = this.waitForAreqZdo('simpleDescRsp', responsePayload);
-            const payload = {dstaddr: networkAddress, nwkaddrofinterest: networkAddress, endpoint: endpointID};
-            await this.znp.request(Subsystem.ZDO, 'simpleDescReq', payload, response.ID);
-            const descriptor = await response.start();
-            return {
-                profileID: descriptor.payload.profileid,
-                endpointID: descriptor.payload.endpoint,
-                deviceID: descriptor.payload.deviceid,
-                inputClusters: descriptor.payload.inclusterlist,
-                outputClusters: descriptor.payload.outclusterlist,
-            };
         }, networkAddress);
     }
 
@@ -375,9 +417,9 @@ class ZStackAdapter extends Adapter {
         disableRecovery: boolean,
         sourceEndpoint?: number,
     ): Promise<Events.ZclPayload | void> {
-        return this.queue.execute<Events.ZclPayload | void>(async () => {
+        return await this.queue.execute<Events.ZclPayload | void>(async () => {
             this.checkInterpanLock();
-            return this.sendZclFrameToEndpointInternal(
+            return await this.sendZclFrameToEndpointInternal(
                 ieeeAddr,
                 networkAddress,
                 endpoint,
@@ -497,7 +539,7 @@ class ZStackAdapter extends Adapter {
                  * wait some time and retry.
                  */
                 await Wait(2000);
-                return this.sendZclFrameToEndpointInternal(
+                return await this.sendZclFrameToEndpointInternal(
                     ieeeAddr,
                     networkAddress,
                     endpoint,
@@ -574,7 +616,7 @@ class ZStackAdapter extends Adapter {
                     await Wait(2000);
                 }
 
-                return this.sendZclFrameToEndpointInternal(
+                return await this.sendZclFrameToEndpointInternal(
                     ieeeAddr,
                     networkAddress,
                     endpoint,
@@ -627,7 +669,7 @@ class ZStackAdapter extends Adapter {
                     }
                     // No response could be of invalid route, e.g. when message is send to wrong parent of end device.
                     await this.discoverRoute(networkAddress);
-                    return this.sendZclFrameToEndpointInternal(
+                    return await this.sendZclFrameToEndpointInternal(
                         ieeeAddr,
                         networkAddress,
                         endpoint,
@@ -651,7 +693,7 @@ class ZStackAdapter extends Adapter {
     }
 
     public async sendZclFrameToGroup(groupID: number, zclFrame: Zcl.Frame, sourceEndpoint?: number): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             this.checkInterpanLock();
             await this.dataRequestExtended(
                 AddressMode.ADDR_GROUP,
@@ -676,7 +718,7 @@ class ZStackAdapter extends Adapter {
     }
 
     public async sendZclFrameToAll(endpoint: number, zclFrame: Zcl.Frame, sourceEndpoint: number, destination: BroadcastAddress): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             this.checkInterpanLock();
             await this.dataRequestExtended(
                 AddressMode.ADDR_16BIT,
@@ -701,177 +743,10 @@ class ZStackAdapter extends Adapter {
         });
     }
 
-    public async lqi(networkAddress: number): Promise<LQI> {
-        return this.queue.execute<LQI>(async (): Promise<LQI> => {
-            this.checkInterpanLock();
-            const neighbors: LQINeighbor[] = [];
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const request = async (startIndex: number): Promise<any> => {
-                const response = this.waitForAreqZdo('mgmtLqiRsp', {srcaddr: networkAddress});
-                await this.znp.request(Subsystem.ZDO, 'mgmtLqiReq', {dstaddr: networkAddress, startindex: startIndex}, response.ID);
-                const result = await response.start();
-                return result;
-            };
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const add = (list: any): void => {
-                for (const entry of list) {
-                    neighbors.push({
-                        linkquality: entry.lqi,
-                        networkAddress: entry.nwkAddr,
-                        ieeeAddr: entry.extAddr,
-                        relationship: entry.relationship,
-                        depth: entry.depth,
-                    });
-                }
-            };
-
-            let response = await request(0);
-            add(response.payload.neighborlqilist);
-            const size = response.payload.neighbortableentries;
-            let nextStartIndex = response.payload.neighborlqilist.length;
-
-            while (neighbors.length < size) {
-                response = await request(nextStartIndex);
-                add(response.payload.neighborlqilist);
-                nextStartIndex += response.payload.neighborlqilist.length;
-            }
-
-            return {neighbors};
-        }, networkAddress);
-    }
-
-    public async routingTable(networkAddress: number): Promise<RoutingTable> {
-        return this.queue.execute<RoutingTable>(async (): Promise<RoutingTable> => {
-            this.checkInterpanLock();
-            const table: RoutingTableEntry[] = [];
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const request = async (startIndex: number): Promise<any> => {
-                const response = this.waitForAreqZdo('mgmtRtgRsp', {srcaddr: networkAddress});
-                await this.znp.request(Subsystem.ZDO, 'mgmtRtgReq', {dstaddr: networkAddress, startindex: startIndex}, response.ID);
-                const result = await response.start();
-                return result;
-            };
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const add = (list: any): void => {
-                for (const entry of list) {
-                    table.push({
-                        destinationAddress: entry.destNwkAddr,
-                        status: entry.routeStatus,
-                        nextHop: entry.nextHopNwkAddr,
-                    });
-                }
-            };
-
-            let response = await request(0);
-            add(response.payload.routingtablelist);
-            const size = response.payload.routingtableentries;
-            let nextStartIndex = response.payload.routingtablelist.length;
-
-            while (table.length < size) {
-                response = await request(nextStartIndex);
-                add(response.payload.routingtablelist);
-                nextStartIndex += response.payload.routingtablelist.length;
-            }
-
-            return {table};
-        }, networkAddress);
-    }
-
     public async addInstallCode(ieeeAddress: string, key: Buffer): Promise<void> {
         assert(this.version.product !== ZnpVersion.zStack12, 'Install code is not supported for ZStack 1.2 adapter');
         const payload = {installCodeFormat: key.length === 18 ? 1 : 2, ieeeaddr: ieeeAddress, installCode: key};
         await this.znp.request(Subsystem.APP_CNF, 'bdbAddInstallCode', payload);
-    }
-
-    public async bind(
-        destinationNetworkAddress: number,
-        sourceIeeeAddress: string,
-        sourceEndpoint: number,
-        clusterID: number,
-        destinationAddressOrGroup: string | number,
-        type: 'endpoint' | 'group',
-        destinationEndpoint?: number,
-    ): Promise<void> {
-        await this.bindInternal(
-            'bind',
-            destinationNetworkAddress,
-            sourceIeeeAddress,
-            sourceEndpoint,
-            clusterID,
-            destinationAddressOrGroup,
-            type,
-            destinationEndpoint,
-        );
-    }
-
-    public async unbind(
-        destinationNetworkAddress: number,
-        sourceIeeeAddress: string,
-        sourceEndpoint: number,
-        clusterID: number,
-        destinationAddressOrGroup: string | number,
-        type: 'endpoint' | 'group',
-        destinationEndpoint?: number,
-    ): Promise<void> {
-        await this.bindInternal(
-            'unbind',
-            destinationNetworkAddress,
-            sourceIeeeAddress,
-            sourceEndpoint,
-            clusterID,
-            destinationAddressOrGroup,
-            type,
-            destinationEndpoint,
-        );
-    }
-
-    private async bindInternal(
-        bindType: 'bind' | 'unbind',
-        destinationNetworkAddress: number,
-        sourceIeeeAddress: string,
-        sourceEndpoint: number,
-        clusterID: number,
-        destinationAddressOrGroup: string | number,
-        targetType: 'endpoint' | 'group',
-        destinationEndpoint?: number,
-    ): Promise<void> {
-        return this.queue.execute<void>(async () => {
-            this.checkInterpanLock();
-            const response = this.waitForAreqZdo(`${bindType}Rsp`, {srcaddr: destinationNetworkAddress});
-
-            const payload = {
-                dstaddr: destinationNetworkAddress,
-                srcaddr: sourceIeeeAddress,
-                srcendpoint: sourceEndpoint,
-                clusterid: clusterID,
-                dstaddrmode: targetType === 'group' ? AddressMode.ADDR_GROUP : AddressMode.ADDR_64BIT,
-                dstaddress: this.toAddressString(destinationAddressOrGroup),
-                dstendpoint: targetType === 'group' ? 0xff : destinationEndpoint,
-            };
-
-            await this.znp.request(Subsystem.ZDO, `${bindType}Req`, payload, response.ID);
-            await response.start();
-        }, destinationNetworkAddress);
-    }
-
-    public removeDevice(networkAddress: number, ieeeAddr: string): Promise<void> {
-        return this.queue.execute<void>(async () => {
-            this.checkInterpanLock();
-            const response = this.waitForAreqZdo('mgmtLeaveRsp', {srcaddr: networkAddress});
-
-            const payload = {
-                dstaddr: networkAddress,
-                deviceaddress: ieeeAddr,
-                removechildrenRejoin: 0,
-            };
-
-            await this.znp.request(Subsystem.ZDO, 'mgmtLeaveReq', payload, response.ID);
-            await response.start();
-        }, networkAddress);
     }
 
     /**
@@ -883,59 +758,55 @@ class ZStackAdapter extends Adapter {
         }
     }
 
-    public onZnpRecieved(object: ZpiObject): void {
+    private onZnpRecieved(object: ZpiObject): void {
         if (object.type !== UnpiConstants.Type.AREQ) {
             return;
         }
 
         if (object.subsystem === Subsystem.ZDO) {
-            if (object.command === 'tcDeviceInd') {
+            if (isMtCmdAreqZdo(object.command)) {
+                this.emit('zdoResponse', object.command.zdoClusterId, object.payload.zdo);
+            }
+
+            if (object.command.name === 'tcDeviceInd') {
                 const payload: Events.DeviceJoinedPayload = {
                     networkAddress: object.payload.nwkaddr,
                     ieeeAddr: object.payload.extaddr,
                 };
 
                 this.emit('deviceJoined', payload);
-            } else if (object.command === 'endDeviceAnnceInd') {
-                const payload: Events.DeviceAnnouncePayload = {
-                    networkAddress: object.payload.nwkaddr,
-                    ieeeAddr: object.payload.ieeeaddr,
-                };
+            } else if (object.command.name === 'endDeviceAnnceInd') {
+                // TODO: better way???
+                /* istanbul ignore else */
+                if (Zdo.Buffalo.checkStatus<Zdo.ClusterId.END_DEVICE_ANNOUNCE>(object.payload.zdo)) {
+                    const zdoPayload = object.payload.zdo[1];
+                    // Only discover routes to end devices, if bit 1 of capabilities === 0 it's an end device.
+                    const isEndDevice = zdoPayload.capabilities.deviceType === 0;
 
-                // Only discover routes to end devices, if bit 1 of capabilities === 0 it's an end device.
-                const isEndDevice = (object.payload.capabilities & (1 << 1)) === 0;
-                if (isEndDevice) {
-                    if (!this.deviceAnnounceRouteDiscoveryDebouncers.has(payload.networkAddress)) {
-                        // If a device announces multiple times in a very short time, it makes no sense
-                        // to rediscover the route every time.
-                        const debouncer = debounce(
-                            () => {
-                                // eslint-disable-next-line @typescript-eslint/no-floating-promises
-                                this.queue.execute<void>(async () => {
-                                    /* istanbul ignore next */
-                                    this.discoverRoute(payload.networkAddress, false).catch(() => {});
-                                }, payload.networkAddress);
-                            },
-                            60 * 1000,
-                            {immediate: true},
-                        );
-                        this.deviceAnnounceRouteDiscoveryDebouncers.set(payload.networkAddress, debouncer);
+                    if (isEndDevice) {
+                        if (!this.deviceAnnounceRouteDiscoveryDebouncers.has(zdoPayload.nwkAddress)) {
+                            // If a device announces multiple times in a very short time, it makes no sense
+                            // to rediscover the route every time.
+                            const debouncer = debounce(
+                                () => {
+                                    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+                                    this.queue.execute<void>(async () => {
+                                        /* istanbul ignore next */
+                                        this.discoverRoute(zdoPayload.nwkAddress, false).catch(() => {});
+                                    }, zdoPayload.nwkAddress);
+                                },
+                                60 * 1000,
+                                {immediate: true},
+                            );
+                            this.deviceAnnounceRouteDiscoveryDebouncers.set(zdoPayload.nwkAddress, debouncer);
+                        }
+
+                        const debouncer = this.deviceAnnounceRouteDiscoveryDebouncers.get(zdoPayload.nwkAddress);
+                        assert(debouncer);
+                        debouncer();
                     }
-
-                    const debouncer = this.deviceAnnounceRouteDiscoveryDebouncers.get(payload.networkAddress);
-                    assert(debouncer);
-                    debouncer();
                 }
-
-                this.emit('deviceAnnounce', payload);
-            } else if (object.command === 'nwkAddrRsp') {
-                const payload: Events.NetworkAddressPayload = {
-                    networkAddress: object.payload.nwkaddr,
-                    ieeeAddr: object.payload.ieeeaddr,
-                };
-
-                this.emit('networkAddress', payload);
-            } else if (object.command === 'concentratorIndCb') {
+            } else if (object.command.name === 'concentratorIndCb') {
                 // Some routers may change short addresses and the announcement
                 // is missed by the coordinator. This can happen when there are
                 // power outages or other interruptions in service. They may
@@ -946,15 +817,18 @@ class ZStackAdapter extends Adapter {
                 // mappings.
                 // https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/158/4403.zstacktask.c
                 // https://github.com/Koenkk/zigbee-herdsman/issues/74
-                const payload: Events.NetworkAddressPayload = {
-                    networkAddress: object.payload.srcaddr,
-                    ieeeAddr: object.payload.extaddr,
-                };
-
-                this.emit('networkAddress', payload);
+                this.emit('zdoResponse', Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE, [
+                    Zdo.Status.SUCCESS,
+                    {
+                        eui64: object.payload.extaddr,
+                        nwkAddress: object.payload.srcaddr,
+                        startIndex: 0,
+                        assocDevList: [],
+                    } as ZdoTypes.NetworkAddressResponse,
+                ]);
             } else {
                 /* istanbul ignore else */
-                if (object.command === 'leaveInd') {
+                if (object.command.name === 'leaveInd') {
                     if (object.payload.rejoin) {
                         logger.debug(`Device leave: Got leave indication with rejoin=true, nothing to do`, NS);
                     } else {
@@ -971,7 +845,7 @@ class ZStackAdapter extends Adapter {
             /* istanbul ignore else */
             if (object.subsystem === Subsystem.AF) {
                 /* istanbul ignore else */
-                if (object.command === 'incomingMsg' || object.command === 'incomingMsgExt') {
+                if (object.command.name === 'incomingMsg' || object.command.name === 'incomingMsgExt') {
                     const payload: Events.ZclPayload = {
                         clusterID: object.payload.clusterid,
                         data: object.payload.data,
@@ -1005,11 +879,11 @@ class ZStackAdapter extends Adapter {
     }
 
     public async backup(ieeeAddressesInDatabase: string[]): Promise<Models.Backup> {
-        return this.adapterManager.backup.createBackup(ieeeAddressesInDatabase);
+        return await this.adapterManager.backup.createBackup(ieeeAddressesInDatabase);
     }
 
     public async setChannelInterPAN(channel: number): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             this.interpanLock = true;
             await this.znp.request(Subsystem.AF, 'interPanCtl', {cmd: 1, data: [channel]});
 
@@ -1022,7 +896,7 @@ class ZStackAdapter extends Adapter {
     }
 
     public async sendZclFrameInterPANToIeeeAddr(zclFrame: Zcl.Frame, ieeeAddr: string): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             await this.dataRequestExtended(
                 AddressMode.ADDR_64BIT,
                 ieeeAddr,
@@ -1039,7 +913,7 @@ class ZStackAdapter extends Adapter {
     }
 
     public async sendZclFrameInterPANBroadcast(zclFrame: Zcl.Frame, timeout: number): Promise<Events.ZclPayload> {
-        return this.queue.execute<Events.ZclPayload>(async () => {
+        return await this.queue.execute<Events.ZclPayload>(async () => {
             const command = zclFrame.command;
             if (command.response == undefined) {
                 throw new Error(`Command '${command.name}' has no response, cannot wait for response`);
@@ -1074,12 +948,12 @@ class ZStackAdapter extends Adapter {
                 throw error;
             }
 
-            return response.start().promise;
+            return await response.start().promise;
         });
     }
 
     public async restoreChannelInterPAN(): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             await this.znp.request(Subsystem.AF, 'interPanCtl', {cmd: 0, data: []});
             // Give adapter some time to restore, otherwise stuff crashes
             await Wait(3000);
@@ -1087,51 +961,10 @@ class ZStackAdapter extends Adapter {
         });
     }
 
-    public async changeChannel(newChannel: number): Promise<void> {
-        return this.queue.execute<void>(async () => {
-            this.checkInterpanLock();
-
-            const payload = {
-                dstaddr: 0xffff, // broadcast with sleepy
-                dstaddrmode: AddressMode.ADDR_BROADCAST,
-                channelmask: [newChannel].reduce((a, c) => a + (1 << c), 0),
-                scanduration: 0xfe, // change channel
-                scancount: 0,
-                nwkmanageraddr: 0,
-            };
-
-            await this.znp.request(Subsystem.ZDO, 'mgmtNwkUpdateReq', payload);
-            // wait for the broadcast to propagate and the adapter to actually change
-            await Wait(10000);
-        });
-    }
-
     public async setTransmitPower(value: number): Promise<void> {
-        return this.queue.execute<void>(async () => {
+        return await this.queue.execute<void>(async () => {
             await this.znp.request(Subsystem.SYS, 'stackTune', {operation: 0, value});
         });
-    }
-
-    private waitForAreqZdo(command: string, payload?: ZpiObjectPayload): {start: () => Promise<ZpiObject>; ID: number} {
-        const result = this.znp.waitFor(UnpiConstants.Type.AREQ, Subsystem.ZDO, command, payload);
-        const start = (): Promise<ZpiObject> => {
-            const startResult = result.start();
-            return new Promise<ZpiObject>((resolve, reject) => {
-                startResult.promise
-                    .then((response) => {
-                        // Even though according to the Z-Stack docs the status is `0` or `1`, the actual code
-                        // shows it sets the `zstack_ZdpStatus` which contains the ZDO status.
-                        const code = response.payload.status;
-                        if (code !== ZdoStatus.SUCCESS) {
-                            reject(new Error(`ZDO error: ${command.replace('Rsp', '')} failed with status '${ZdoStatus[code]}' (${code})`));
-                        } else {
-                            resolve(response);
-                        }
-                    })
-                    .catch(reject);
-            });
-        };
-        return {start, ID: result.ID};
     }
 
     private waitForInternal(
@@ -1196,7 +1029,7 @@ class ZStackAdapter extends Adapter {
         timeout: number,
     ): Promise<number> {
         const transactionID = this.nextTransactionID();
-        const response = this.znp.waitFor(Type.AREQ, Subsystem.AF, 'dataConfirm', {transid: transactionID}, timeout);
+        const response = this.znp.waitFor(Type.AREQ, Subsystem.AF, 'dataConfirm', undefined, transactionID, undefined, timeout);
 
         await this.znp.request(
             Subsystem.AF,
@@ -1240,7 +1073,9 @@ class ZStackAdapter extends Adapter {
         attemptsLeft = 5,
     ): Promise<ZpiObject | void> {
         const transactionID = this.nextTransactionID();
-        const response = confirmation ? this.znp.waitFor(Type.AREQ, Subsystem.AF, 'dataConfirm', {transid: transactionID}, timeout) : undefined;
+        const response = confirmation
+            ? this.znp.waitFor(Type.AREQ, Subsystem.AF, 'dataConfirm', undefined, transactionID, undefined, timeout)
+            : undefined;
 
         await this.znp.request(
             Subsystem.AF,
@@ -1275,7 +1110,7 @@ class ZStackAdapter extends Adapter {
                      * Retry this command once after a cooling down period.
                      */
                     await Wait(2000);
-                    return this.dataRequestExtended(
+                    return await this.dataRequestExtended(
                         addressMode,
                         destinationAddressOrGroupID,
                         destinationEndpoint,

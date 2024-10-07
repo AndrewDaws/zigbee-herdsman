@@ -43,7 +43,7 @@ import {
     SecManNetworkKeyInfo,
 } from '../../../src/adapter/ember/types';
 import {lowHighBytes} from '../../../src/adapter/ember/utils/math';
-import {DeviceAnnouncePayload, DeviceJoinedPayload, DeviceLeavePayload, NetworkAddressPayload, ZclPayload} from '../../../src/adapter/events';
+import {DeviceJoinedPayload, DeviceLeavePayload, ZclPayload} from '../../../src/adapter/events';
 import {AdapterOptions, NetworkOptions, SerialPortOptions} from '../../../src/adapter/tstype';
 import {Backup} from '../../../src/models/backup';
 import {UnifiedBackupStorage} from '../../../src/models/backup-storage-unified';
@@ -255,11 +255,22 @@ const mockEzspGetNetworkKeyInfo = jest.fn().mockResolvedValue([
         networkKeyFrameCounter: DEFAULT_BACKUP.network_key.frame_counter,
     } as SecManNetworkKeyInfo,
 ]);
+const mockEzspGetApsKeyInfo = jest.fn().mockResolvedValue([
+    SLStatus.OK,
+    {
+        bitmask: EmberKeyStructBitmask.HAS_OUTGOING_FRAME_COUNTER,
+        outgoingFrameCounter: 456,
+        incomingFrameCounter: 0,
+        ttlInSeconds: 0,
+    } as SecManAPSKeyMetadata,
+]);
 const mockEzspSetRadioPower = jest.fn().mockResolvedValue(SLStatus.OK);
 const mockEzspImportTransientKey = jest.fn().mockResolvedValue(SLStatus.OK);
 const mockEzspClearTransientLinkKeys = jest.fn().mockResolvedValue(SLStatus.OK);
 const mockEzspSetLogicalAndRadioChannel = jest.fn().mockResolvedValue(SLStatus.OK);
 const mockEzspSendRawMessage = jest.fn().mockResolvedValue(SLStatus.OK);
+const mockEzspSetNWKFrameCounter = jest.fn().mockResolvedValue(SLStatus.OK);
+const mockEzspSetAPSFrameCounter = jest.fn().mockResolvedValue(SLStatus.OK);
 
 jest.mock('../../../src/adapter/ember/uart/ash');
 
@@ -313,11 +324,14 @@ jest.mock('../../../src/adapter/ember/ezsp/ezsp', () => ({
         ezspSendBroadcast: mockEzspSendBroadcast,
         ezspSendUnicast: mockEzspSendUnicast,
         ezspGetNetworkKeyInfo: mockEzspGetNetworkKeyInfo,
+        ezspGetApsKeyInfo: mockEzspGetApsKeyInfo,
         ezspSetRadioPower: mockEzspSetRadioPower,
         ezspImportTransientKey: mockEzspImportTransientKey,
         ezspClearTransientLinkKeys: mockEzspClearTransientLinkKeys,
         ezspSetLogicalAndRadioChannel: mockEzspSetLogicalAndRadioChannel,
         ezspSendRawMessage: mockEzspSendRawMessage,
+        ezspSetNWKFrameCounter: mockEzspSetNWKFrameCounter,
+        ezspSetAPSFrameCounter: mockEzspSetAPSFrameCounter,
     })),
 }));
 
@@ -365,11 +379,14 @@ const ezspMocks = [
     mockEzspSendBroadcast,
     mockEzspSendUnicast,
     mockEzspGetNetworkKeyInfo,
+    mockEzspGetApsKeyInfo,
     mockEzspSetRadioPower,
     mockEzspImportTransientKey,
     mockEzspClearTransientLinkKeys,
     mockEzspSetLogicalAndRadioChannel,
     mockEzspSendRawMessage,
+    mockEzspSetNWKFrameCounter,
+    mockEzspSetAPSFrameCounter,
 ];
 
 describe('Ember Adapter Layer', () => {
@@ -396,6 +413,23 @@ describe('Ember Adapter Layer', () => {
 
     const takeResetCodePath = () => {
         deleteCoordinatorBackup();
+        mockEzspGetNetworkParameters.mockResolvedValueOnce([
+            SLStatus.OK,
+            EmberNodeType.COORDINATOR,
+            {
+                extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
+                panId: 1234,
+                radioTxPower: 5,
+                radioChannel: DEFAULT_NETWORK_OPTIONS.channelList[0],
+                joinMethod: 0,
+                nwkManagerId: 0,
+                nwkUpdateId: 0,
+                channels: ZSpec.ALL_802_15_4_CHANNELS_MASK,
+            } as EmberNetworkParameters,
+        ]);
+    };
+
+    const takeRestoredCodePath = () => {
         mockEzspGetNetworkParameters.mockResolvedValueOnce([
             SLStatus.OK,
             EmberNodeType.COORDINATOR,
@@ -627,17 +661,40 @@ describe('Ember Adapter Layer', () => {
 
     it('Starts with restored when no network in adapter', async () => {
         adapter = new EmberAdapter(DEFAULT_NETWORK_OPTIONS, DEFAULT_SERIAL_PORT_OPTIONS, backupPath, DEFAULT_ADAPTER_OPTIONS);
+        const expectedNetParams: EmberNetworkParameters = {
+            extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
+            panId: DEFAULT_NETWORK_OPTIONS.panID,
+            radioTxPower: 5,
+            radioChannel: DEFAULT_NETWORK_OPTIONS.channelList[0],
+            joinMethod: 0,
+            nwkManagerId: 0,
+            nwkUpdateId: 0,
+            channels: ZSpec.ALL_802_15_4_CHANNELS_MASK,
+        };
 
         mockEzspNetworkInit.mockResolvedValueOnce(SLStatus.NOT_JOINED);
 
         const result = adapter.start();
 
         await jest.advanceTimersByTimeAsync(5000);
+        expect(mockEzspSetNWKFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.network_key.frame_counter);
+        // expect(mockEzspSetAPSFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.???.???);
+        expect(mockEzspFormNetwork).toHaveBeenCalledWith(expectedNetParams);
         await expect(result).resolves.toStrictEqual('restored');
     });
 
     it('Starts with restored when network param mismatch but backup available', async () => {
         adapter = new EmberAdapter(DEFAULT_NETWORK_OPTIONS, DEFAULT_SERIAL_PORT_OPTIONS, backupPath, DEFAULT_ADAPTER_OPTIONS);
+        const expectedNetParams: EmberNetworkParameters = {
+            extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
+            panId: DEFAULT_NETWORK_OPTIONS.panID,
+            radioTxPower: 5,
+            radioChannel: DEFAULT_NETWORK_OPTIONS.channelList[0],
+            joinMethod: 0,
+            nwkManagerId: 0,
+            nwkUpdateId: 0,
+            channels: ZSpec.ALL_802_15_4_CHANNELS_MASK,
+        };
 
         mockEzspGetNetworkParameters.mockResolvedValueOnce([
             SLStatus.OK,
@@ -657,12 +714,14 @@ describe('Ember Adapter Layer', () => {
         const result = adapter.start();
 
         await jest.advanceTimersByTimeAsync(5000);
+        expect(mockEzspSetNWKFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.network_key.frame_counter);
+        // expect(mockEzspSetAPSFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.???.???);
+        expect(mockEzspFormNetwork).toHaveBeenCalledWith(expectedNetParams);
         await expect(result).resolves.toStrictEqual('restored');
     });
 
     it('Starts with restored when network key mismatch but backup available', async () => {
         adapter = new EmberAdapter(DEFAULT_NETWORK_OPTIONS, DEFAULT_SERIAL_PORT_OPTIONS, backupPath, DEFAULT_ADAPTER_OPTIONS);
-
         const expectedNetParams: EmberNetworkParameters = {
             extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
             panId: DEFAULT_NETWORK_OPTIONS.panID,
@@ -673,14 +732,19 @@ describe('Ember Adapter Layer', () => {
             nwkUpdateId: 0,
             channels: ZSpec.ALL_802_15_4_CHANNELS_MASK,
         };
+
         mockEzspGetNetworkParameters.mockResolvedValueOnce([SLStatus.OK, EmberNodeType.COORDINATOR, expectedNetParams]);
+
         const contents = Buffer.from(DEFAULT_BACKUP.network_key.key, 'hex').fill(0xff);
+
         mockEzspExportKey.mockResolvedValueOnce([SLStatus.OK, {contents} as SecManKey]);
 
         const result = adapter.start();
 
         await jest.advanceTimersByTimeAsync(5000);
         await expect(result).resolves.toStrictEqual('restored');
+        expect(mockEzspSetNWKFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.network_key.frame_counter);
+        // expect(mockEzspSetAPSFrameCounter).toHaveBeenCalledWith(DEFAULT_BACKUP.???.???);
         expect(mockEzspFormNetwork).toHaveBeenCalledWith(expectedNetParams);
     });
 
@@ -721,6 +785,8 @@ describe('Ember Adapter Layer', () => {
 
         await jest.advanceTimersByTimeAsync(5000);
         await expect(result).resolves.toStrictEqual('reset');
+        expect(mockEzspSetNWKFrameCounter).toHaveBeenCalledTimes(0);
+        // expect(mockEzspSetAPSFrameCounter).toHaveBeenCalledTimes(0);
         expect(mockEzspFormNetwork).toHaveBeenCalledWith({
             panId: 1234,
             extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
@@ -745,6 +811,8 @@ describe('Ember Adapter Layer', () => {
 
         await jest.advanceTimersByTimeAsync(5000);
         await expect(result).resolves.toStrictEqual('reset');
+        expect(mockEzspSetNWKFrameCounter).toHaveBeenCalledTimes(0);
+        // expect(mockEzspSetAPSFrameCounter).toHaveBeenCalledTimes(0);
         expect(mockEzspFormNetwork).toHaveBeenCalledWith({
             panId: 1234,
             extendedPanId: DEFAULT_NETWORK_OPTIONS.extendedPanID!,
@@ -842,28 +910,28 @@ describe('Ember Adapter Layer', () => {
                     .mockResolvedValueOnce([SLStatus.OK, EmberNodeType.COORDINATOR, deepClone(DEFAULT_ADAPTER_NETWORK_PARAMETERS)])
                     .mockResolvedValueOnce([SLStatus.FAIL, 0, {}]);
             },
-            `Failed to get network parameters with status=${SLStatus[SLStatus.FAIL]}.`,
+            `Failed to get network parameters with status=FAIL.`,
         ],
         [
             'if could not set concentrator',
             () => {
                 mockEzspSetConcentrator.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[CONCENTRATOR] Failed to set concentrator with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[CONCENTRATOR] Failed to set concentrator with status=FAIL.`,
         ],
         [
             'if could not add endpoint',
             () => {
                 mockEzspAddEndpoint.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `Failed to register endpoint '1' with status=${SLStatus[SLStatus.FAIL]}.`,
+            `Failed to register endpoint '1' with status=FAIL.`,
         ],
         [
             'if could not set multicast table entry',
             () => {
                 mockEzspSetMulticastTableEntry.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `Failed to register group '0' in multicast table with status=${SLStatus[SLStatus.FAIL]}.`,
+            `Failed to register group '0' in multicast table with status=FAIL.`,
         ],
         [
             'if could not set TC key request policy',
@@ -873,7 +941,7 @@ describe('Ember Adapter Layer', () => {
                     .mockResolvedValueOnce(SLStatus.OK) // EzspPolicyId.MESSAGE_CONTENTS_IN_CALLBACK_POLICY
                     .mockResolvedValueOnce(SLStatus.FAIL); // EzspPolicyId.TC_KEY_REQUEST_POLICY
             },
-            `[INIT TC] Failed to set EzspPolicyId TC_KEY_REQUEST_POLICY to ALLOW_TC_KEY_REQUESTS_AND_SEND_CURRENT_KEY with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed to set EzspPolicyId TC_KEY_REQUEST_POLICY to ALLOW_TC_KEY_REQUESTS_AND_SEND_CURRENT_KEY with status=FAIL.`,
         ],
         [
             'if could not set app key request policy',
@@ -884,7 +952,7 @@ describe('Ember Adapter Layer', () => {
                     .mockResolvedValueOnce(SLStatus.OK) // EzspPolicyId.TC_KEY_REQUEST_POLICY
                     .mockResolvedValueOnce(SLStatus.FAIL); // EzspPolicyId.APP_KEY_REQUEST_POLICY
             },
-            `[INIT TC] Failed to set EzspPolicyId APP_KEY_REQUEST_POLICY to DENY_APP_KEY_REQUESTS with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed to set EzspPolicyId APP_KEY_REQUEST_POLICY to DENY_APP_KEY_REQUESTS with status=FAIL.`,
         ],
         [
             'if could not set app key request policy',
@@ -896,21 +964,21 @@ describe('Ember Adapter Layer', () => {
                     .mockResolvedValueOnce(SLStatus.OK) // EzspPolicyId.APP_KEY_REQUEST_POLICY
                     .mockResolvedValueOnce(SLStatus.FAIL); // EzspPolicyId.TRUST_CENTER_POLICY
             },
-            `[INIT TC] Failed to set join policy to USE_PRECONFIGURED_KEY with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed to set join policy to USE_PRECONFIGURED_KEY with status=FAIL.`,
         ],
         [
             'if could not init network',
             () => {
                 mockEzspNetworkInit.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[INIT TC] Failed network init request with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed network init request with status=FAIL.`,
         ],
         [
             'if could not export network key',
             () => {
                 mockEzspExportKey.mockResolvedValueOnce([SLStatus.FAIL, Buffer.alloc(16)]);
             },
-            `[INIT TC] Failed to export Network Key with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed to export Network Key with status=FAIL.`,
         ],
         [
             'if could not leave network',
@@ -919,15 +987,31 @@ describe('Ember Adapter Layer', () => {
                 mockEzspGetNetworkParameters.mockResolvedValueOnce([SLStatus.FAIL, 0, {}]);
                 mockEzspLeaveNetwork.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[INIT TC] Failed leave network request with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT TC] Failed leave network request with status=FAIL.`,
         ],
+        [
+            'if form could not set NWK frame counter',
+            () => {
+                takeRestoredCodePath();
+                mockEzspSetNWKFrameCounter.mockResolvedValueOnce(SLStatus.FAIL);
+            },
+            `[INIT FORM] Failed to set NWK frame counter with status=FAIL.`,
+        ],
+        // [
+        //     'if form could not set TC APS frame counter',
+        //     () => {
+        //         takeRestoredCodePath();
+        //         mockEzspSetAPSFrameCounter.mockResolvedValueOnce(SLStatus.FAIL);
+        //     },
+        //     `[INIT FORM] Failed to set TC APS frame counter with status=FAIL.`,
+        // ],
         [
             'if form could not set initial security state',
             () => {
                 takeResetCodePath();
                 mockEzspSetInitialSecurityState.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[INIT FORM] Failed to set initial security state with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT FORM] Failed to set initial security state with status=FAIL.`,
         ],
         [
             'if form could not set extended security bitmask',
@@ -935,7 +1019,7 @@ describe('Ember Adapter Layer', () => {
                 takeResetCodePath();
                 mockEzspSetExtendedSecurityBitmask.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[INIT FORM] Failed to set extended security bitmask to 272 with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT FORM] Failed to set extended security bitmask to 272 with status=FAIL.`,
         ],
         [
             'if could not form network',
@@ -943,7 +1027,7 @@ describe('Ember Adapter Layer', () => {
                 takeResetCodePath();
                 mockEzspFormNetwork.mockResolvedValueOnce(SLStatus.FAIL);
             },
-            `[INIT FORM] Failed form network request with status=${SLStatus[SLStatus.FAIL]}.`,
+            `[INIT FORM] Failed form network request with status=FAIL.`,
         ],
         [
             'if backup corrupted',
@@ -1109,7 +1193,7 @@ describe('Ember Adapter Layer', () => {
 
         await jest.advanceTimersByTimeAsync(5000);
         await expect(result).resolves.toStrictEqual('reset');
-        expect(loggerSpies.error).toHaveBeenCalledWith(`[INIT FORM] Failed to clear key table with status=${SLStatus[SLStatus.FAIL]}.`, 'zh:ember');
+        expect(loggerSpies.error).toHaveBeenCalledWith(`[INIT FORM] Failed to clear key table with status=FAIL.`, 'zh:ember');
     });
 
     it('Starts but ignores backup if unsupported version', async () => {
@@ -1202,21 +1286,21 @@ describe('Ember Adapter Layer', () => {
             const p1 = defuseRejection(adapter.emberGetPanId());
 
             await jest.advanceTimersByTimeAsync(5000);
-            await expect(p1).rejects.toThrow(`Failed to get PAN ID (via network parameters) with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p1).rejects.toThrow(`Failed to get PAN ID (via network parameters) with status=FAIL.`);
 
             adapter.clearNetworkCache();
 
             const p2 = defuseRejection(adapter.emberGetExtendedPanId());
 
             await jest.advanceTimersByTimeAsync(5000);
-            await expect(p2).rejects.toThrow(`Failed to get Extended PAN ID (via network parameters) with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p2).rejects.toThrow(`Failed to get Extended PAN ID (via network parameters) with status=FAIL.`);
 
             adapter.clearNetworkCache();
 
             const p3 = defuseRejection(adapter.emberGetRadioChannel());
 
             await jest.advanceTimersByTimeAsync(5000);
-            await expect(p3).rejects.toThrow(`Failed to get radio channel (via network parameters) with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p3).rejects.toThrow(`Failed to get radio channel (via network parameters) with status=FAIL.`);
         });
 
         it('Logs stack status change', async () => {
@@ -1243,10 +1327,7 @@ describe('Ember Adapter Layer', () => {
             mockEzspEmitter.emit('messageSent', SLStatus.ZIGBEE_DELIVERY_FAILED, EmberOutgoingMessageType.BROADCAST, 1234, apsFrame, 1);
             await flushPromises();
 
-            expect(loggerSpies.error).toHaveBeenCalledWith(
-                `Delivery of BROADCAST failed for '1234' [apsFrame=${JSON.stringify(apsFrame)} messageTag=1]`,
-                'zh:ember',
-            );
+            expect(loggerSpies.error).toHaveBeenCalledWith(`Delivery of BROADCAST failed for '1234'.`, 'zh:ember');
 
             const spyDeliveryFailedFor = jest.spyOn(
                 // @ts-expect-error private
@@ -1355,17 +1436,19 @@ describe('Ember Adapter Layer', () => {
             );
             await flushPromises();
 
+            const zdoResponse = [
+                Zdo.Status.SUCCESS,
+                {
+                    eui64: '0x332211eeddccbbaa',
+                    nwkAddress: sender,
+                    startIndex: 0,
+                    assocDevList: [],
+                } as ZdoTypes.NetworkAddressResponse,
+            ];
+
             expect(spyResolveZDO).toHaveBeenCalledTimes(1);
-            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, {
-                eui64: '0x332211eeddccbbaa',
-                nwkAddress: sender,
-                startIndex: 0,
-                assocDevList: [],
-            } as ZdoTypes.NetworkAddressResponse);
-            expect(spyEmit).toHaveBeenCalledWith('networkAddress', {
-                networkAddress: sender,
-                ieeeAddr: '0x332211eeddccbbaa',
-            } as NetworkAddressPayload);
+            expect(spyResolveZDO).toHaveBeenCalledWith('0x332211eeddccbbaa', apsFrame, zdoResponse);
+            expect(spyEmit).toHaveBeenCalledWith('zdoResponse', Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE, zdoResponse);
         });
 
         it('Emits device announce event on ZDO END_DEVICE_ANNOUNCE', async () => {
@@ -1390,25 +1473,26 @@ describe('Ember Adapter Layer', () => {
 
             await flushPromises();
 
+            const zdoResponse = [
+                Zdo.Status.SUCCESS,
+                {
+                    nwkAddress: sender,
+                    eui64: '0x332211eeddccbbaa',
+                    capabilities: {
+                        alternatePANCoordinator: 0,
+                        deviceType: 1,
+                        powerSource: 1,
+                        rxOnWhenIdle: 0,
+                        reserved1: 0,
+                        reserved2: 0,
+                        securityCapability: 0,
+                        allocateAddress: 0,
+                    },
+                } as ZdoTypes.EndDeviceAnnounce,
+            ];
             expect(spyResolveZDO).toHaveBeenCalledTimes(1);
-            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, {
-                nwkAddress: sender,
-                eui64: '0x332211eeddccbbaa',
-                capabilities: {
-                    alternatePANCoordinator: 0,
-                    deviceType: 1,
-                    powerSource: 1,
-                    rxOnWhenIdle: 0,
-                    reserved1: 0,
-                    reserved2: 0,
-                    securityCapability: 0,
-                    allocateAddress: 0,
-                },
-            } as ZdoTypes.EndDeviceAnnounce);
-            expect(spyEmit).toHaveBeenCalledWith('deviceAnnounce', {
-                networkAddress: sender,
-                ieeeAddr: '0x332211eeddccbbaa',
-            } as DeviceAnnouncePayload);
+            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, zdoResponse);
+            expect(spyEmit).toHaveBeenCalledWith('zdoResponse', Zdo.ClusterId.END_DEVICE_ANNOUNCE, zdoResponse);
         });
 
         it('Emits ZCL payload on incoming message', async () => {
@@ -1721,9 +1805,7 @@ describe('Ember Adapter Layer', () => {
         it('Fails to export link keys due to failed table size retrieval', async () => {
             mockEzspGetConfigurationValue.mockResolvedValueOnce([SLStatus.FAIL, 0]);
 
-            await expect(adapter.exportLinkKeys()).rejects.toThrow(
-                `[BACKUP] Failed to retrieve key table size from NCP with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
+            await expect(adapter.exportLinkKeys()).rejects.toThrow(`[BACKUP] Failed to retrieve key table size from NCP with status=FAIL.`);
         });
 
         it('Fails to export link keys due to failed AES hashing', async () => {
@@ -1751,7 +1833,7 @@ describe('Ember Adapter Layer', () => {
             await adapter.exportLinkKeys();
 
             expect(loggerSpies.error).toHaveBeenCalledWith(
-                `[BACKUP] Failed to hash link key at index 0 with status=${SLStatus[SLStatus.FAIL]}. Omitting from backup.`,
+                `[BACKUP] Failed to hash link key at index 0 with status=FAIL. Omitting from backup.`,
                 'zh:ember',
             );
         });
@@ -1845,7 +1927,7 @@ describe('Ember Adapter Layer', () => {
                     // @ts-expect-error mock, unnecessary
                     {},
                 ]),
-            ).rejects.toThrow(`[BACKUP] Failed to retrieve key table size from NCP with status=${SLStatus[SLStatus.FAIL]}.`);
+            ).rejects.toThrow(`[BACKUP] Failed to retrieve key table size from NCP with status=FAIL.`);
         });
 
         it('Failed to import link keys due to insufficient table size', async () => {
@@ -1904,7 +1986,7 @@ describe('Ember Adapter Layer', () => {
                         incomingFrameCounter: k1Metadata.incomingFrameCounter,
                     },
                 ]),
-            ).rejects.toThrow(`[BACKUP] Failed to set key table entry at index 0 with status=${SLStatus[SLStatus.FAIL]}.`);
+            ).rejects.toThrow(`[BACKUP] Failed to set key table entry at index 0 with status=FAIL.`);
         });
 
         it('Failed to import link keys due to failed key erase', async () => {
@@ -1938,7 +2020,7 @@ describe('Ember Adapter Layer', () => {
                         incomingFrameCounter: k1Metadata.incomingFrameCounter,
                     },
                 ]),
-            ).rejects.toThrow(`[BACKUP] Failed to erase key table entry at index 1 with status=${SLStatus[SLStatus.FAIL]}.`);
+            ).rejects.toThrow(`[BACKUP] Failed to erase key table entry at index 1 with status=FAIL.`);
         });
 
         it('Broadcasts network key update', async () => {
@@ -1956,7 +2038,7 @@ describe('Ember Adapter Layer', () => {
             const p = defuseRejection(adapter.broadcastNetworkKeyUpdate());
 
             await jest.advanceTimersByTimeAsync(100000);
-            await expect(p).rejects.toThrow(`[TRUST CENTER] Failed to broadcast next network key with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p).rejects.toThrow(`[TRUST CENTER] Failed to broadcast next network key with status=FAIL.`);
             expect(mockEzspBroadcastNextNetworkKey).toHaveBeenCalledTimes(1);
             expect(mockEzspBroadcastNetworkKeySwitch).toHaveBeenCalledTimes(0);
         });
@@ -1967,7 +2049,7 @@ describe('Ember Adapter Layer', () => {
             const p = defuseRejection(adapter.broadcastNetworkKeyUpdate());
 
             await jest.advanceTimersByTimeAsync(100000);
-            await expect(p).rejects.toThrow(`[TRUST CENTER] Failed to broadcast network key switch with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p).rejects.toThrow(`[TRUST CENTER] Failed to broadcast network key switch with status=FAIL.`);
             expect(mockEzspBroadcastNextNetworkKey).toHaveBeenCalledTimes(1);
             expect(mockEzspBroadcastNetworkKeySwitch).toHaveBeenCalledTimes(1);
         });
@@ -2006,23 +2088,17 @@ describe('Ember Adapter Layer', () => {
             expect(spyEmit).toHaveBeenCalledWith('disconnected');
         });
 
+        it('Handles channel changed stack status', async () => {
+            mockEzspEmitter.emit('stackStatus', SLStatus.ZIGBEE_CHANNEL_CHANGED);
+            await flushPromises();
+            expect(loggerSpies.info).toHaveBeenCalledWith(`[STACK STATUS] Channel changed.`, 'zh:ember');
+        });
+
         it.each([
-            ['getCoordinator', []],
+            ['getCoordinatorIEEE', []],
             ['getNetworkParameters', []],
-            ['changeChannel', [15]],
             ['permitJoin', [250, 1234]],
             ['permitJoin', [250]],
-            ['lqi', [1234]],
-            ['routingTable', [1234]],
-            ['nodeDescriptor', [1234]],
-            ['activeEndpoints', [1234]],
-            ['simpleDescriptor', [1234, 1]],
-            ['bind', [1234, '0x1122334455667788', 1, 0, '0xaabbccddee112233', 'endpoint', 1]],
-            ['bind', [1234, '0x1122334455667788', 1, 0, 54, 'group', 1]],
-            ['unbind', [1234, '0x1122334455667788', 1, 0, '0xaabbccddee112233', 'endpoint', 1]],
-            ['unbind', [1234, '0x1122334455667788', 1, 0, 54, 'group', 1]],
-            ['removeDevice', [1234]],
-            ['removeDevice', [1234, '0x1122334455667788']],
             [
                 'sendZclFrameToEndpoint',
                 [
@@ -2055,21 +2131,8 @@ describe('Ember Adapter Layer', () => {
             await expect(adapter[funcName](...args)).rejects.toThrow(`[INTERPAN MODE] Cannot execute non-InterPAN commands.`);
         });
 
-        it('Adapter impl: getCoordinator', async () => {
-            await expect(adapter.getCoordinator()).resolves.toStrictEqual({
-                ieeeAddr: DEFAULT_COORDINATOR_IEEE,
-                networkAddress: ZSpec.COORDINATOR_ADDRESS,
-                manufacturerID: Zcl.ManufacturerCode.SILICON_LABORATORIES,
-                endpoints: FIXED_ENDPOINTS.map((ep) => {
-                    return {
-                        profileID: ep.profileId,
-                        ID: ep.endpoint,
-                        deviceID: ep.deviceId,
-                        inputClusters: ep.inClusterList.slice(), // copy
-                        outputClusters: ep.outClusterList.slice(), // copy
-                    };
-                }),
-            } as TsType.Coordinator);
+        it('Adapter impl: getCoordinatorIEEE', async () => {
+            await expect(adapter.getCoordinatorIEEE()).resolves.toStrictEqual(DEFAULT_COORDINATOR_IEEE);
         });
 
         it('Adapter impl: getCoordinatorVersion', async () => {
@@ -2131,15 +2194,22 @@ describe('Ember Adapter Layer', () => {
                 () => {
                     mockEzspGetNetworkParameters.mockResolvedValueOnce([SLStatus.FAIL, 0, {}]);
                 },
-                `[BACKUP] Failed to get network parameters with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[BACKUP] Failed to get network parameters with status=FAIL.`,
             ],
             [
-                'failed get network keys info',
+                'failed get network key info',
                 () => {
                     mockEzspGetNetworkKeyInfo.mockResolvedValueOnce([SLStatus.FAIL, {}]);
                 },
-                `[BACKUP] Failed to get network keys info with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[BACKUP] Failed to get network keys info with status=FAIL.`,
             ],
+            // [
+            //     'failed get TC APS key info',
+            //     () => {
+            //         mockEzspGetNetworkKeyInfo.mockResolvedValueOnce([SLStatus.FAIL, {}]);
+            //     },
+            //     `[BACKUP] Failed to get TC APS key info with status=FAIL.`,
+            // ],
             [
                 'no network key set',
                 () => {
@@ -2161,7 +2231,7 @@ describe('Ember Adapter Layer', () => {
                 () => {
                     mockEzspExportKey.mockResolvedValueOnce([SLStatus.FAIL, {}]);
                 },
-                `[BACKUP] Failed to export TC Link Key with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[BACKUP] Failed to export TC Link Key with status=FAIL.`,
             ],
             [
                 'failed export network key',
@@ -2173,7 +2243,7 @@ describe('Ember Adapter Layer', () => {
                         ])
                         .mockResolvedValueOnce([SLStatus.FAIL, {}]);
                 },
-                `[BACKUP] Failed to export Network Key with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[BACKUP] Failed to export Network Key with status=FAIL.`,
             ],
         ])('Adapter impl: throws when backup fails due to %s', async (_command, setup, error) => {
             setup();
@@ -2201,39 +2271,6 @@ describe('Ember Adapter Layer', () => {
             expect(mockEzspGetNetworkParameters).toHaveBeenCalledTimes(1);
         });
 
-        it('Adapter impl: changeChannel', async () => {
-            const spyResolveEvent = jest.spyOn(
-                // @ts-expect-error private
-                adapter.oneWaitress,
-                'resolveEvent',
-            );
-
-            mockEzspSendBroadcast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('stackStatus', SLStatus.ZIGBEE_CHANNEL_CHANGED);
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.changeChannel(25);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await p;
-            expect(mockEzspSendBroadcast).toHaveBeenCalledTimes(1);
-            expect(spyResolveEvent).toHaveBeenCalledWith(OneWaitressEvents.STACK_STATUS_CHANNEL_CHANGED);
-        });
-
-        it('Adapter impl: throws when changeChannel fails', async () => {
-            mockEzspSendBroadcast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            await expect(adapter.changeChannel(25)).rejects.toThrow(
-                `[ZDO] Failed broadcast channel change to '25' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-            expect(mockEzspSendBroadcast).toHaveBeenCalledTimes(1);
-        });
-
         it('Adapter impl: setTransmitPower', async () => {
             await expect(adapter.setTransmitPower(10)).resolves.toStrictEqual(undefined);
             expect(mockEzspSetRadioPower).toHaveBeenCalledTimes(1);
@@ -2242,7 +2279,7 @@ describe('Ember Adapter Layer', () => {
         it('Adapter impl: throws when setTransmitPower fails', async () => {
             mockEzspSetRadioPower.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.setTransmitPower(10)).rejects.toThrow(`Failed to set transmit power to 10 status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(adapter.setTransmitPower(10)).rejects.toThrow(`Failed to set transmit power to 10 status=FAIL.`);
             expect(mockEzspSetRadioPower).toHaveBeenCalledTimes(1);
         });
 
@@ -2267,7 +2304,7 @@ describe('Ember Adapter Layer', () => {
             mockEzspAesMmoHash.mockResolvedValueOnce([SLStatus.FAIL, Buffer.alloc(16)]);
 
             await expect(adapter.addInstallCode('0x1122334455667788', Buffer.alloc(16))).rejects.toThrow(
-                `[ADD INSTALL CODE] Failed AES hash for '0x1122334455667788' with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[ADD INSTALL CODE] Failed AES hash for '0x1122334455667788' with status=FAIL.`,
             );
             expect(mockEzspAesMmoHash).toHaveBeenCalledTimes(1);
             expect(mockEzspImportTransientKey).toHaveBeenCalledTimes(0);
@@ -2277,7 +2314,7 @@ describe('Ember Adapter Layer', () => {
             mockEzspImportTransientKey.mockResolvedValueOnce(SLStatus.FAIL);
 
             await expect(adapter.addInstallCode('0x1122334455667788', Buffer.alloc(16))).rejects.toThrow(
-                `[ADD INSTALL CODE] Failed for '0x1122334455667788' with status=${SLStatus[SLStatus.FAIL]}.`,
+                `[ADD INSTALL CODE] Failed for '0x1122334455667788' with status=FAIL.`,
             );
             expect(mockEzspAesMmoHash).toHaveBeenCalledTimes(1);
             expect(mockEzspImportTransientKey).toHaveBeenCalledTimes(1);
@@ -2384,19 +2421,20 @@ describe('Ember Adapter Layer', () => {
 
             mockEzspSendUnicast.mockImplementationOnce(emitResponse).mockImplementationOnce(emitResponse);
 
+            let zdoResponse = [Zdo.Status.SUCCESS, undefined];
             let p = adapter.permitJoin(250, sender);
             await jest.advanceTimersByTimeAsync(1000);
             await p;
             expect(mockEzspSendUnicast).toHaveBeenCalledTimes(1);
             expect(spyResolveZDO).toHaveBeenCalledTimes(1);
-            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, undefined);
+            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, zdoResponse);
 
             p = adapter.permitJoin(0, sender);
             await jest.advanceTimersByTimeAsync(1000);
             await p;
             expect(mockEzspSendUnicast).toHaveBeenCalledTimes(2);
             expect(spyResolveZDO).toHaveBeenCalledTimes(2);
-            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, undefined);
+            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, zdoResponse);
 
             expect(mockEzspSetPolicy).toHaveBeenNthCalledWith(
                 1,
@@ -2434,13 +2472,21 @@ describe('Ember Adapter Layer', () => {
             expect(mockManufCode).toStrictEqual(Zcl.ManufacturerCode.SILICON_LABORATORIES);
         });
 
-        it('Adapter impl: throws when permitJoin on coordinator fails due to failed request', async () => {
+        it('Adapter impl: throws when permitJoin request on coordinator fails', async () => {
             mockEzspPermitJoining.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.permitJoin(250, 0)).rejects.toThrow(`[ZDO] Failed permit joining request with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(adapter.permitJoin(250, 0)).rejects.toThrow(`[ZDO] Failed coordinator permit joining request with status=FAIL.`);
         });
 
-        it('Adapter impl: throws when permitJoin on router fails due to failed ZDO status', async () => {
+        it('Adapter impl: throws when permitJoin broadcast request fails', async () => {
+            mockEzspSendBroadcast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
+
+            await expect(defuseRejection(adapter.permitJoin(250, undefined))).rejects.toThrow(
+                `~x~> [ZDO PERMIT_JOINING_REQUEST BROADCAST to=65532 messageTag=1] Failed to send request with status=FAIL.`,
+            );
+        });
+
+        it('Adapter impl: resolves undefined when permitJoin on router fails due to failed ZDO status', async () => {
             const spyResolveZDO = jest.spyOn(
                 // @ts-expect-error private
                 adapter.oneWaitress,
@@ -2460,880 +2506,35 @@ describe('Ember Adapter Layer', () => {
             mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.NOT_AUTHORIZED]));
             await flushPromises();
 
+            const zdoResponse = [Zdo.Status.NOT_AUTHORIZED, undefined];
             expect(spyResolveZDO).toHaveBeenCalledTimes(1);
-            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, new Zdo.StatusError(Zdo.Status.NOT_AUTHORIZED));
+            expect(spyResolveZDO).toHaveBeenCalledWith(sender, apsFrame, zdoResponse);
         });
 
-        it('Adapter impl: throws when permitJoin on router fails due to failed request', async () => {
+        it('Adapter impl: throws when permitJoin request on router fails', async () => {
             mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
 
             await expect(adapter.permitJoin(250, 1234)).rejects.toThrow(
-                `[ZDO] Failed permit joining request for '1234' with status=${SLStatus[SLStatus.FAIL]}.`,
+                `~x~> [ZDO PERMIT_JOINING_REQUEST UNICAST to=0xFFFFFFFFFFFFFFFF:1234 messageTag=1] Failed to send request with status=FAIL.`,
             );
         });
 
         it('Adapter impl: throws when permitJoin fails to import ZIGBEE_PROFILE_INTEROPERABILITY_LINK_KEY', async () => {
             mockEzspImportTransientKey.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.permitJoin(250)).rejects.toThrow(`[ZDO] Failed import transient key with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(adapter.permitJoin(250)).rejects.toThrow(`[ZDO] Failed import transient key with status=FAIL.`);
         });
 
         it('Adapter impl: throws when permitJoin fails to set TC policy', async () => {
             mockEzspSetPolicy.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.permitJoin(250)).rejects.toThrow(`[ZDO] Failed set join policy with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(adapter.permitJoin(250)).rejects.toThrow(`[ZDO] Failed set join policy with status=FAIL.`);
         });
 
         it('Adapter impl: throws when stop permitJoin fails to restore TC policy', async () => {
             mockEzspSetPolicy.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.permitJoin(0)).rejects.toThrow(`[ZDO] Failed set join policy with status=${SLStatus[SLStatus.FAIL]}.`);
-        });
-
-        it('Adapter impl: lqi', async () => {
-            const sender: NodeId = 1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.LQI_TABLE_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast
-                .mockImplementationOnce(() => {
-                    setTimeout(async () => {
-                        mockEzspEmitter.emit(
-                            'zdoResponse',
-                            apsFrame,
-                            sender,
-                            Buffer.from([
-                                1,
-                                Zdo.Status.SUCCESS,
-                                2, // neighborTableEntries
-                                0, // startIndex
-                                1, // entryCount
-                                ...DEFAULT_NETWORK_OPTIONS.extendedPanID!, // extendedPanId
-                                0x88,
-                                0x77,
-                                0x66,
-                                0x55,
-                                0x44,
-                                0x33,
-                                0x22,
-                                0x11, // eui64
-                                0x67,
-                                0x45, // nwkAddress
-                                0b00110010, // deviceTypeByte
-                                0, // permitJoiningByte
-                                0, // depth
-                                234, // lqi
-                            ]),
-                        );
-                        await flushPromises();
-                    }, 300);
-
-                    return [SLStatus.OK, ++mockAPSSequence];
-                })
-                .mockImplementationOnce(() => {
-                    setTimeout(async () => {
-                        mockEzspEmitter.emit(
-                            'zdoResponse',
-                            apsFrame,
-                            sender,
-                            Buffer.from([
-                                1,
-                                Zdo.Status.SUCCESS,
-                                2, // neighborTableEntries
-                                1, // startIndex
-                                1, // entryCount
-                                ...DEFAULT_NETWORK_OPTIONS.extendedPanID!, // extendedPanId
-                                0x44,
-                                0x33,
-                                0x22,
-                                0x11,
-                                0x88,
-                                0x77,
-                                0x66,
-                                0x55, // eui64
-                                0x23,
-                                0x32, // nwkAddress
-                                0b00010010, // deviceTypeByte
-                                0, // permitJoiningByte
-                                0, // depth
-                                145, // lqi
-                            ]),
-                        );
-                        await flushPromises();
-                    }, 300);
-
-                    return [SLStatus.OK, ++mockAPSSequence];
-                });
-
-            const p = adapter.lqi(sender);
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).resolves.toStrictEqual({
-                neighbors: [
-                    {
-                        ieeeAddr: '0x1122334455667788',
-                        networkAddress: 0x4567,
-                        linkquality: 234,
-                        relationship: 0x03,
-                        depth: 0,
-                    },
-                    {
-                        ieeeAddr: '0x5566778811223344',
-                        networkAddress: 0x3223,
-                        linkquality: 145,
-                        relationship: 0x01,
-                        depth: 0,
-                    },
-                ],
-            } as TsType.LQI);
-        });
-
-        it('Adapter impl: throws when lqi fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.lqi(sender));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`[ZDO] Failed LQI request for '${sender}' (index '0') with status=${SLStatus[SLStatus.FAIL]}.`);
-        });
-
-        it('Adapter impl: routingTable', async () => {
-            const sender: NodeId = 1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.ROUTING_TABLE_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast
-                .mockImplementationOnce(() => {
-                    setTimeout(async () => {
-                        mockEzspEmitter.emit(
-                            'zdoResponse',
-                            apsFrame,
-                            sender,
-                            Buffer.from([
-                                1,
-                                Zdo.Status.SUCCESS,
-                                2, // routingTableEntries
-                                0, // startIndex
-                                1, // entryCount
-                                0x98,
-                                0x76, // destinationAddress
-                                0, // statusByte
-                                0x56,
-                                0x34, // nextHopAddress
-                            ]),
-                        );
-                        await flushPromises();
-                    }, 300);
-
-                    return [SLStatus.OK, ++mockAPSSequence];
-                })
-                .mockImplementationOnce(() => {
-                    setTimeout(async () => {
-                        mockEzspEmitter.emit(
-                            'zdoResponse',
-                            apsFrame,
-                            sender,
-                            Buffer.from([
-                                1,
-                                Zdo.Status.SUCCESS,
-                                2, // routingTableEntries
-                                1, // startIndex
-                                1, // entryCount
-                                0x67,
-                                0x45, // destinationAddress
-                                0b011, // statusByte
-                                0x85,
-                                0x34, // nextHopAddress
-                            ]),
-                        );
-                        await flushPromises();
-                    }, 300);
-
-                    return [SLStatus.OK, ++mockAPSSequence];
-                });
-
-            const p = adapter.routingTable(sender);
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).resolves.toStrictEqual({
-                table: [
-                    {
-                        destinationAddress: 0x7698,
-                        status: 'ACTIVE',
-                        nextHop: 0x3456,
-                    },
-                    {
-                        destinationAddress: 0x4567,
-                        status: 'INACTIVE',
-                        nextHop: 0x3485,
-                    },
-                ],
-            } as TsType.RoutingTable);
-        });
-
-        it('Adapter impl: throws when routingTable fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.routingTable(sender));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`[ZDO] Failed routing table request for '${sender}' (index '0') with status=${SLStatus[SLStatus.FAIL]}.`);
-        });
-
-        it('Adapter impl: nodeDescriptor for coordinator', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.NODE_DESCRIPTOR_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit(
-                        'zdoResponse',
-                        apsFrame,
-                        sender,
-                        Buffer.from([
-                            1,
-                            Zdo.Status.SUCCESS,
-                            0x34,
-                            0x12, // nwkAddress
-                            0b00000000, // nodeDescByte1
-                            0, // nodeDescByte2
-                            0, // macCapFlags
-                            0x49,
-                            0x10, // manufacturerCode
-                            60, // maxBufSize
-                            0,
-                            0, // maxIncTxSize
-                            0,
-                            0, // serverMask
-                            0,
-                            0, // maxOutTxSize
-                            0, // deprecated1
-                        ]),
-                    );
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.nodeDescriptor(sender);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual({
-                type: 'Coordinator',
-                manufacturerCode: 0x1049,
-            } as TsType.NodeDescriptor);
-        });
-
-        it('Adapter impl: nodeDescriptor for router', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.NODE_DESCRIPTOR_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-            // for coverage of stackComplianceResivion detection
-            const serverMask = Zdo.Utils.createServerMask({
-                primaryTrustCenter: 0,
-                backupTrustCenter: 0,
-                deprecated1: 0,
-                deprecated2: 0,
-                deprecated3: 0,
-                deprecated4: 0,
-                networkManager: 0,
-                reserved1: 0,
-                reserved2: 0,
-                stackComplianceResivion: 0,
-            });
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit(
-                        'zdoResponse',
-                        apsFrame,
-                        sender,
-                        Buffer.from([
-                            1,
-                            Zdo.Status.SUCCESS,
-                            0x34,
-                            0x12, // nwkAddress
-                            0b00000001, // nodeDescByte1
-                            0, // nodeDescByte2
-                            0, // macCapFlags
-                            0x56,
-                            0x67, // manufacturerCode
-                            60, // maxBufSize
-                            0,
-                            0, // maxIncTxSize
-                            serverMask & 0xff,
-                            (serverMask >> 8) & 0xff, // serverMask
-                            0,
-                            0, // maxOutTxSize
-                            0, // deprecated1
-                        ]),
-                    );
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.nodeDescriptor(sender);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual({
-                type: 'Router',
-                manufacturerCode: 0x6756,
-            } as TsType.NodeDescriptor);
-            expect(loggerSpies.warning).toHaveBeenCalledWith(
-                `[ZDO] Device '${sender}' is only compliant to revision 'pre-21' of the ZigBee specification (current revision: 22).`,
-                'zh:ember',
-            );
-        });
-
-        it('Adapter impl: nodeDescriptor for end device', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.NODE_DESCRIPTOR_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-            // for coverage of stackComplianceResivion detection
-            const serverMask = Zdo.Utils.createServerMask({
-                primaryTrustCenter: 0,
-                backupTrustCenter: 0,
-                deprecated1: 0,
-                deprecated2: 0,
-                deprecated3: 0,
-                deprecated4: 0,
-                networkManager: 0,
-                reserved1: 0,
-                reserved2: 0,
-                stackComplianceResivion: 21,
-            });
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit(
-                        'zdoResponse',
-                        apsFrame,
-                        sender,
-                        Buffer.from([
-                            1,
-                            Zdo.Status.SUCCESS,
-                            0x34,
-                            0x12, // nwkAddress
-                            0b00000010, // nodeDescByte1
-                            0, // nodeDescByte2
-                            0, // macCapFlags
-                            0x56,
-                            0x67, // manufacturerCode
-                            60, // maxBufSize
-                            0,
-                            0, // maxIncTxSize
-                            serverMask & 0xff,
-                            (serverMask >> 8) & 0xff, // serverMask
-                            0,
-                            0, // maxOutTxSize
-                            0, // deprecated1
-                        ]),
-                    );
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.nodeDescriptor(sender);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual({
-                type: 'EndDevice',
-                manufacturerCode: 0x6756,
-            } as TsType.NodeDescriptor);
-            expect(loggerSpies.warning).toHaveBeenCalledWith(
-                `[ZDO] Device '${sender}' is only compliant to revision '21' of the ZigBee specification (current revision: 22).`,
-                'zh:ember',
-            );
-        });
-
-        it('Adapter impl: throws when nodeDescriptor fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.nodeDescriptor(sender));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`[ZDO] Failed node descriptor request for '${sender}' with status=${SLStatus[SLStatus.FAIL]}.`);
-        });
-
-        it('Adapter impl: activeEndpoints', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.ACTIVE_ENDPOINTS_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit(
-                        'zdoResponse',
-                        apsFrame,
-                        sender,
-                        Buffer.from([
-                            1,
-                            Zdo.Status.SUCCESS,
-                            0x34,
-                            0x12, // nwkAddress
-                            2, // endpointCount
-                            1,
-                            43, // endpointList
-                        ]),
-                    );
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.activeEndpoints(sender);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual({
-                endpoints: [1, 43],
-            } as TsType.ActiveEndpoints);
-        });
-
-        it('Adapter impl: throws when activeEndpoints fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.activeEndpoints(sender));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`[ZDO] Failed active endpoints request for '${sender}' with status=${SLStatus[SLStatus.FAIL]}.`);
-        });
-
-        it('Adapter impl: simpleDescriptor', async () => {
-            const sender: NodeId = 0x1234;
-            const endpoint: number = 1;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.SIMPLE_DESCRIPTOR_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit(
-                        'zdoResponse',
-                        apsFrame,
-                        sender,
-                        Buffer.from([
-                            1,
-                            Zdo.Status.SUCCESS,
-                            0x34,
-                            0x12, // nwkAddress
-                            18, // length
-                            endpoint, // endpoint
-                            0x33,
-                            0x44, // profileId
-                            0x00,
-                            0x66, // deviceId
-                            1, // deviceVersion
-                            2, // inClusterCount
-                            0x00,
-                            0x00,
-                            0x03,
-                            0x00, // inClusterList
-                            3, // outClusterCount
-                            0x01,
-                            0x00,
-                            0x08,
-                            0x00,
-                            0x79,
-                            0x23, // outClusterList
-                        ]),
-                    );
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.simpleDescriptor(sender, endpoint);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual({
-                profileID: 0x4433,
-                endpointID: endpoint,
-                deviceID: 0x6600,
-                inputClusters: [0x00, 0x03],
-                outputClusters: [0x01, 0x08, 0x2379],
-            } as TsType.SimpleDescriptor);
-        });
-
-        it('Adapter impl: throws when simpleDescriptor fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.simpleDescriptor(sender, 1));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed simple descriptor request for '${sender}' endpoint '1' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-        });
-
-        it('Adapter impl: bind endpoint', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.BIND_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.SUCCESS]));
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.bind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, DEFAULT_COORDINATOR_IEEE, 'endpoint', 1);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual(undefined);
-
-            // verify ZDO payload
-            expect(mockEzspSendUnicast.mock.calls[0][4]).toStrictEqual(
-                Buffer.from([
-                    0x01, // seq
-                    0x88,
-                    0x77,
-                    0x66,
-                    0x55,
-                    0x44,
-                    0x33,
-                    0x22,
-                    0x11, // sourceIeeeAddress
-                    0x01, // sourceEndpoint
-                    0x00,
-                    0x00, // clusterID
-                    0x03, // type
-                    0x11,
-                    0x22,
-                    0x33,
-                    0x44,
-                    0x55,
-                    0x66,
-                    0x77,
-                    0x88, // destination DEFAULT_COORDINATOR_IEEE
-                    0x01, // destinationEndpoint
-                ]),
-            );
-        });
-
-        it('Adapter impl: throws when bind endpoint fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(
-                adapter.bind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, DEFAULT_COORDINATOR_IEEE, 'endpoint', 1),
-            );
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed bind request for '${sender}' destination '${DEFAULT_COORDINATOR_IEEE}' endpoint '1' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-        });
-
-        it('Adapter impl: bind group', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.BIND_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.SUCCESS]));
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.bind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, 987, 'group', 1);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual(undefined);
-
-            // verify ZDO payload
-            expect(mockEzspSendUnicast.mock.calls[0][4]).toStrictEqual(
-                Buffer.from([
-                    0x01, // seq
-                    0x88,
-                    0x77,
-                    0x66,
-                    0x55,
-                    0x44,
-                    0x33,
-                    0x22,
-                    0x11, // sourceIeeeAddress
-                    0x01, // sourceEndpoint
-                    0x00,
-                    0x00, // clusterID
-                    0x01, // type
-                    0xdb,
-                    0x03, // destination
-                ]),
-            );
-        });
-
-        it('Adapter impl: throws when bind group fails request', async () => {
-            const sender: NodeId = 1234;
-            const groupId: number = 987;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.bind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, groupId, 'group'));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed bind request for '${sender}' destination '${groupId}' endpoint 'undefined' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-        });
-
-        it('Adapter impl: unbind endpoint', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.UNBIND_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.SUCCESS]));
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.unbind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, DEFAULT_COORDINATOR_IEEE, 'endpoint', 1);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual(undefined);
-
-            // verify ZDO payload
-            expect(mockEzspSendUnicast.mock.calls[0][4]).toStrictEqual(
-                Buffer.from([
-                    0x01, // seq
-                    0x88,
-                    0x77,
-                    0x66,
-                    0x55,
-                    0x44,
-                    0x33,
-                    0x22,
-                    0x11, // sourceIeeeAddress
-                    0x01, // sourceEndpoint
-                    0x00,
-                    0x00, // clusterID
-                    0x03, // type
-                    0x11,
-                    0x22,
-                    0x33,
-                    0x44,
-                    0x55,
-                    0x66,
-                    0x77,
-                    0x88, // destination DEFAULT_COORDINATOR_IEEE
-                    0x01, // destinationEndpoint
-                ]),
-            );
-        });
-
-        it('Adapter impl: throws when unbind endpoint fails request', async () => {
-            const sender: NodeId = 1234;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(
-                adapter.unbind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, DEFAULT_COORDINATOR_IEEE, 'endpoint', 1),
-            );
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed unbind request for '${sender}' destination '${DEFAULT_COORDINATOR_IEEE}' endpoint '1' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-        });
-
-        it('Adapter impl: unbind group', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.UNBIND_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.SUCCESS]));
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.unbind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, 987, 'group', 1);
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual(undefined);
-
-            // verify ZDO payload
-            expect(mockEzspSendUnicast.mock.calls[0][4]).toStrictEqual(
-                Buffer.from([
-                    0x01, // seq
-                    0x88,
-                    0x77,
-                    0x66,
-                    0x55,
-                    0x44,
-                    0x33,
-                    0x22,
-                    0x11, // sourceIeeeAddress
-                    0x01, // sourceEndpoint
-                    0x00,
-                    0x00, // clusterID
-                    0x01, // type
-                    0xdb,
-                    0x03, // destination
-                ]),
-            );
-        });
-
-        it('Adapter impl: throws when unbind group fails request', async () => {
-            const sender: NodeId = 1234;
-            const groupId: number = 987;
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.unbind(sender, '0x1122334455667788', 1, Zcl.Clusters.genBasic.ID, groupId, 'group'));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed unbind request for '${sender}' destination '${groupId}' endpoint 'undefined' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
-        });
-
-        it('Adapter impl: removeDevice', async () => {
-            const sender: NodeId = 0x1234;
-            const apsFrame: EmberApsFrame = {
-                profileId: Zdo.ZDO_PROFILE_ID,
-                clusterId: Zdo.ClusterId.LEAVE_RESPONSE,
-                sourceEndpoint: Zdo.ZDO_ENDPOINT,
-                destinationEndpoint: Zdo.ZDO_ENDPOINT,
-                options: 0,
-                groupId: 0,
-                sequence: 0,
-            };
-
-            mockEzspSendUnicast.mockImplementationOnce(() => {
-                setTimeout(async () => {
-                    mockEzspEmitter.emit('zdoResponse', apsFrame, sender, Buffer.from([1, Zdo.Status.SUCCESS]));
-                    await flushPromises();
-                }, 300);
-
-                return [SLStatus.OK, ++mockAPSSequence];
-            });
-
-            const p = adapter.removeDevice(sender, '0x1122334455667788');
-
-            await jest.advanceTimersByTimeAsync(1000);
-            await expect(p).resolves.toStrictEqual(undefined);
-        });
-
-        it('Adapter impl: throws when removeDevice fails request', async () => {
-            const sender: NodeId = 1234;
-            const ieee: EUI64 = '0x1122334455667788';
-
-            mockEzspSendUnicast.mockResolvedValueOnce([SLStatus.FAIL, 0]);
-
-            const p = defuseRejection(adapter.removeDevice(sender, ieee));
-
-            await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(
-                `[ZDO] Failed remove device request for '${sender}' target '${ieee}' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
+            await expect(adapter.permitJoin(0)).rejects.toThrow(`[ZDO] Failed set join policy with status=FAIL.`);
         });
 
         it('Adapter impl: sendZclFrameToEndpoint with command response with fixed source endpoint', async () => {
@@ -3691,7 +2892,9 @@ describe('Ember Adapter Layer', () => {
             );
 
             await jest.advanceTimersByTimeAsync(10000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL to=${networkAddress}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`);
+            await expect(p).rejects.toThrow(
+                `~x~> [ZCL to=0x1122334455667788:1234 apsFrame={"profileId":260,"clusterId":0,"sourceEndpoint":1,"destinationEndpoint":1,"options":4416,"groupId":0,"sequence":0}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`,
+            );
             expect(mockEzspSend).toHaveBeenCalledTimes(1);
             expect(mockEzspSend).toHaveBeenCalledWith(EmberOutgoingMessageType.DIRECT, networkAddress, apsFrame, zclFrame.toBuffer(), 0, 0);
         });
@@ -3737,7 +2940,9 @@ describe('Ember Adapter Layer', () => {
             );
 
             await jest.advanceTimersByTimeAsync(10000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL to=${networkAddress}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`);
+            await expect(p).rejects.toThrow(
+                `~x~> [ZCL to=0x1122334455667788:1234 apsFrame={"profileId":260,"clusterId":0,"sourceEndpoint":1,"destinationEndpoint":1,"options":4416,"groupId":0,"sequence":0}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`,
+            );
             expect(mockEzspSend).toHaveBeenCalledTimes(1);
             expect(mockEzspSend).toHaveBeenCalledWith(EmberOutgoingMessageType.DIRECT, networkAddress, apsFrame, zclFrame.toBuffer(), 0, 0);
         });
@@ -3786,7 +2991,9 @@ describe('Ember Adapter Layer', () => {
             );
 
             await jest.advanceTimersByTimeAsync(10000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL to=${networkAddress}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`);
+            await expect(p).rejects.toThrow(
+                `~x~> [ZCL to=0x1122334455667788:1234 apsFrame={"profileId":260,"clusterId":0,"sourceEndpoint":1,"destinationEndpoint":1,"options":4416,"groupId":0,"sequence":0}] Failed to send request with status=${SLStatus[SLStatus.BUSY]}.`,
+            );
             expect(mockEzspSend).toHaveBeenCalledTimes(3);
             expect(mockEzspSend).toHaveBeenCalledWith(EmberOutgoingMessageType.DIRECT, networkAddress, apsFrame, zclFrame.toBuffer(), 0, 0);
         });
@@ -3832,9 +3039,72 @@ describe('Ember Adapter Layer', () => {
             );
 
             await jest.advanceTimersByTimeAsync(10000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL to=${networkAddress}] Failed to send request with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p).rejects.toThrow(
+                `~x~> [ZCL to=0x1122334455667788:1234 apsFrame={"profileId":260,"clusterId":0,"sourceEndpoint":1,"destinationEndpoint":1,"options":4416,"groupId":0,"sequence":0}] Failed to send request with status=FAIL.`,
+            );
             expect(mockEzspSend).toHaveBeenCalledTimes(1);
             expect(mockEzspSend).toHaveBeenCalledWith(EmberOutgoingMessageType.DIRECT, networkAddress, apsFrame, zclFrame.toBuffer(), 0, 0);
+        });
+
+        it('Adapter impl: sendZdo with EUI64', async () => {
+            const sender: NodeId = 0x6789;
+            const senderEUI64: EUI64 = '0x1122334455667788';
+            const apsFrame: EmberApsFrame = {
+                profileId: Zdo.ZDO_PROFILE_ID,
+                clusterId: Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE,
+                sourceEndpoint: Zdo.ZDO_ENDPOINT,
+                destinationEndpoint: Zdo.ZDO_ENDPOINT,
+                options: 0,
+                groupId: 0,
+                sequence: 0,
+            };
+
+            mockEzspSendBroadcast.mockImplementationOnce(() => {
+                setTimeout(async () => {
+                    mockEzspEmitter.emit(
+                        'zdoResponse',
+                        apsFrame,
+                        sender,
+                        Buffer.from([
+                            1,
+                            Zdo.Status.SUCCESS,
+                            0x88,
+                            0x77,
+                            0x66,
+                            0x55,
+                            0x44,
+                            0x33,
+                            0x22,
+                            0x11,
+                            0x89, // nwkAddress
+                            0x67, // nwkAddress
+                        ]),
+                    );
+                    await flushPromises();
+                }, 300);
+
+                return [SLStatus.OK, ++mockAPSSequence];
+            });
+
+            const zdoPayload = Zdo.Buffalo.buildRequest(false, Zdo.ClusterId.NETWORK_ADDRESS_REQUEST, senderEUI64, false, 0);
+            const p = adapter.sendZdo(
+                senderEUI64,
+                ZSpec.NULL_NODE_ID /* same as broadcast SLEEPY */,
+                Zdo.ClusterId.NETWORK_ADDRESS_REQUEST,
+                zdoPayload,
+                false,
+            );
+
+            await jest.advanceTimersByTimeAsync(1000);
+            await expect(p).resolves.toStrictEqual([
+                Zdo.Status.SUCCESS,
+                {
+                    eui64: senderEUI64,
+                    nwkAddress: sender,
+                    startIndex: 0,
+                    assocDevList: [],
+                } as ZdoTypes.NetworkAddressResponse,
+            ]);
         });
 
         it('Adapter impl: sendZclFrameToEndpoint with default response', async () => {
@@ -3982,7 +3252,7 @@ describe('Ember Adapter Layer', () => {
             const p = defuseRejection(adapter.sendZclFrameToGroup(groupId, zclFrame, 1));
 
             await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL GROUP] Failed to send with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p).rejects.toThrow(`~x~> [ZCL GROUP groupId=32] Failed to send with status=FAIL.`);
             expect(mockEzspSend).toHaveBeenCalledTimes(1);
         });
 
@@ -4052,7 +3322,7 @@ describe('Ember Adapter Layer', () => {
             const p = defuseRejection(adapter.sendZclFrameToAll(endpoint, zclFrame, 1, ZSpec.BroadcastAddress.DEFAULT));
 
             await jest.advanceTimersByTimeAsync(5000);
-            await expect(p).rejects.toThrow(`~x~> [ZCL BROADCAST] Failed to send with status=${SLStatus[SLStatus.FAIL]}.`);
+            await expect(p).rejects.toThrow(`~x~> [ZCL BROADCAST destination=65532] Failed to send with status=FAIL.`);
             expect(mockEzspSend).toHaveBeenCalledTimes(1);
         });
 
@@ -4064,9 +3334,7 @@ describe('Ember Adapter Layer', () => {
         it('Adapter impl: throws when setChannelInterPAN fails request', async () => {
             mockEzspSetLogicalAndRadioChannel.mockResolvedValueOnce(SLStatus.FAIL);
 
-            await expect(adapter.setChannelInterPAN(15)).rejects.toThrow(
-                `Failed to set InterPAN channel to '15' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
+            await expect(adapter.setChannelInterPAN(15)).rejects.toThrow(`Failed to set InterPAN channel to '15' with status=FAIL.`);
             expect(mockEzspSetLogicalAndRadioChannel).toHaveBeenCalledWith(15);
         });
 
@@ -4217,9 +3485,7 @@ describe('Ember Adapter Layer', () => {
             const p = defuseRejection(adapter.restoreChannelInterPAN());
 
             await jest.advanceTimersByTimeAsync(10000);
-            await expect(p).rejects.toThrow(
-                `Failed to restore InterPAN channel to '${DEFAULT_NETWORK_OPTIONS.channelList[0]}' with status=${SLStatus[SLStatus.FAIL]}.`,
-            );
+            await expect(p).rejects.toThrow(`Failed to restore InterPAN channel to '${DEFAULT_NETWORK_OPTIONS.channelList[0]}' with status=FAIL.`);
             expect(mockEzspSetLogicalAndRadioChannel).toHaveBeenCalledWith(DEFAULT_NETWORK_OPTIONS.channelList[0]);
         });
     });

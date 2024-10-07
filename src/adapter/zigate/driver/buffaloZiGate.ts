@@ -1,7 +1,9 @@
 /* istanbul ignore file */
 
 import {Buffalo} from '../../../buffalo';
+import {EUI64} from '../../../zspec/tstypes';
 import {BuffaloZclOptions} from '../../../zspec/zcl/definition/tstype';
+import {getMacCapFlags} from '../../../zspec/zdo/utils';
 import {LOG_LEVEL} from './constants';
 import ParameterType from './parameterType';
 
@@ -17,13 +19,13 @@ class BuffaloZiGate extends Buffalo {
                 return this.writeUInt8(value);
             }
             case ParameterType.UINT16: {
-                return this.writeUInt16(value);
+                return this.writeUInt16BE(value);
             }
             case ParameterType.UINT32: {
-                return this.writeUInt32(value);
+                return this.writeUInt32BE(value);
             }
             case ParameterType.IEEEADDR: {
-                return this.writeIeeeAddr(value);
+                return this.writeIeeeAddrBE(value);
             }
             case ParameterType.BUFFER: {
                 return this.writeBuffer(value, value.length);
@@ -50,23 +52,17 @@ class BuffaloZiGate extends Buffalo {
                 return this.writeListUInt8(value);
             }
             case ParameterType.LIST_UINT16: {
-                return this.writeListUInt16(value);
+                return this.writeListUInt16BE(value);
             }
             case ParameterType.INT8: {
                 return this.writeInt8(value);
             }
             case ParameterType.ADDRESS_WITH_TYPE_DEPENDENCY: {
                 const addressMode = this.buffer.readUInt8(this.position - 1);
-                return addressMode == 3 ? this.writeIeeeAddr(value) : this.writeUInt16BE(value);
+                return addressMode == 3 ? this.writeIeeeAddrBE(value) : this.writeUInt16BE(value);
             }
             case ParameterType.RAW: {
                 return this.writeRaw(value);
-            }
-            case ParameterType.UINT16BE: {
-                return this.writeUInt16BE(value);
-            }
-            case ParameterType.UINT32BE: {
-                return this.writeUInt32BE(value);
             }
         }
 
@@ -79,13 +75,13 @@ class BuffaloZiGate extends Buffalo {
                 return this.readUInt8();
             }
             case ParameterType.UINT16: {
-                return this.readUInt16();
+                return this.readUInt16BE();
             }
             case ParameterType.UINT32: {
-                return this.readUInt32();
+                return this.readUInt32BE();
             }
             case ParameterType.IEEEADDR: {
-                return this.readIeeeAddr();
+                return this.readIeeeAddrBE();
             }
             case ParameterType.BUFFER: {
                 // if length option not specified, read the whole buffer
@@ -113,41 +109,17 @@ class BuffaloZiGate extends Buffalo {
                 return this.readListUInt8(options.length ?? 0); // XXX: should always be valid?
             }
             case ParameterType.LIST_UINT16: {
-                return this.readListUInt16(options.length ?? 0); // XXX: should always be valid?
+                return this.readListUInt16BE(options.length ?? 0); // XXX: should always be valid?
             }
             case ParameterType.INT8: {
                 return this.readInt8();
             }
             case ParameterType.MACCAPABILITY: {
-                const result: {[k: string]: boolean | number} = {};
-                const mac = this.readUInt8();
-                //
-                result.alternatePanCoordinator = !!(mac & 0b00000001);
-                // bit 0: Alternative PAN Coordinator, always 0
-                result.fullFunctionDevice = !!(mac & 0b00000010);
-                // bit 1: Device Type, 1 = FFD , 0 = RFD ; cf. https://fr.wikipedia.org/wiki/IEEE_802.15.4
-                result.mainsPowerSource = !!(mac & 0b00000100);
-                // bit 2: Power Source, 1 = mains power, 0 = other
-                result.receiverOnWhenIdle = !!(mac & 0b00001000);
-                // bit 3: Receiver on when Idle, 1 = non-sleepy, 0 = sleepy
-                result.reserved = (mac & 0b00110000) >> 4;
-                // bit 4&5: Reserved
-                result.securityCapability = !!(mac & 0b01000000);
-                // bit 6: Security capacity, always 0 (standard security)
-                result.allocateAddress = !!(mac & 0b10000000);
-                // bit 7: 1 = joining device must be issued network address
-
-                return result;
+                return getMacCapFlags(this.readUInt8());
             }
             case ParameterType.ADDRESS_WITH_TYPE_DEPENDENCY: {
                 const addressMode = this.buffer.readUInt8(this.position - 1);
-                return addressMode == 3 ? this.readIeeeAddr() : this.readUInt16BE();
-            }
-            case ParameterType.UINT16BE: {
-                return this.readUInt16BE();
-            }
-            case ParameterType.UINT32BE: {
-                return this.readUInt32BE();
+                return addressMode == 3 ? this.readIeeeAddrBE() : this.readUInt16BE();
             }
             case ParameterType.BUFFER_RAW: {
                 const buffer = this.buffer.subarray(this.position);
@@ -180,21 +152,41 @@ class BuffaloZiGate extends Buffalo {
         this.position += 2;
         return value;
     }
+    public writeUInt16BE(value: number): void {
+        this.buffer.writeUInt16BE(value, this.position);
+        this.position += 2;
+    }
 
     public readUInt32BE(): number {
         const value = this.buffer.readUInt32BE(this.position);
         this.position += 4;
         return value;
     }
-
-    public writeUInt16BE(value: number): void {
-        this.buffer.writeUInt16BE(value, this.position);
-        this.position += 2;
-    }
-
     public writeUInt32BE(value: number): void {
         this.buffer.writeUInt32BE(value, this.position);
         this.position += 4;
+    }
+
+    public readListUInt16BE(length: number): number[] {
+        const value: number[] = [];
+        for (let i = 0; i < length; i++) {
+            value.push(this.readUInt16BE());
+        }
+
+        return value;
+    }
+    public writeListUInt16BE(values: number[]): void {
+        for (const value of values) {
+            this.writeUInt16BE(value);
+        }
+    }
+
+    public readIeeeAddrBE(): EUI64 {
+        return `0x${this.readBuffer(8).toString('hex')}`;
+    }
+    public writeIeeeAddrBE(value: string /*TODO: EUI64*/): void {
+        this.writeUInt32BE(parseInt(value.slice(2, 10), 16));
+        this.writeUInt32BE(parseInt(value.slice(10), 16));
     }
 }
 

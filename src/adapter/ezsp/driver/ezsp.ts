@@ -434,7 +434,7 @@ export class Ezsp extends EventEmitter {
             return;
         }
 
-        logger.debug(`<== 0x${frameId.toString(16)}: ${JSON.stringify(frm)}`, NS);
+        logger.debug(() => `<== 0x${frameId.toString(16)}: ${JSON.stringify(frm)}`, NS);
 
         const handled = this.waitress.resolve({
             frameId,
@@ -455,6 +455,10 @@ export class Ezsp extends EventEmitter {
     async version(): Promise<number> {
         const version = this.ezspV;
         const result = await this.execCommand('version', {desiredProtocolVersion: version});
+
+        if (result.protocolVersion >= 14) {
+            throw new Error(`'ezsp' driver is not compatible with firmware 8.x.x or above (EZSP v14+). Use 'ember' driver instead.`);
+        }
 
         if (result.protocolVersion !== version) {
             logger.debug(`Switching to eszp version ${result.protocolVersion}`, NS);
@@ -633,7 +637,7 @@ export class Ezsp extends EventEmitter {
     private makeFrame(name: string, params: ParamsDesc | undefined, seq: number): Buffer {
         const frmData = new EZSPFrameData(name, true, params);
 
-        logger.debug(`==> ${JSON.stringify(frmData)}`, NS);
+        logger.debug(() => `==> ${JSON.stringify(frmData)}`, NS);
 
         const frame = [seq & 255];
 
@@ -653,13 +657,13 @@ export class Ezsp extends EventEmitter {
     }
 
     public async execCommand(name: string, params?: ParamsDesc): Promise<EZSPFrameData> {
-        logger.debug(`==> ${name}: ${JSON.stringify(params)}`, NS);
+        logger.debug(() => `==> ${name}: ${JSON.stringify(params)}`, NS);
 
         if (!this.serialDriver.isInitialized()) {
             throw new Error('Connection not initialized');
         }
 
-        return this.queue.execute<EZSPFrameData>(async (): Promise<EZSPFrameData> => {
+        return await this.queue.execute<EZSPFrameData>(async (): Promise<EZSPFrameData> => {
             const data = this.makeFrame(name, params, this.cmdSeq);
             const waiter = this.waitFor(name, this.cmdSeq);
             this.cmdSeq = (this.cmdSeq + 1) & 255;

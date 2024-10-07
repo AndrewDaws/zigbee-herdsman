@@ -2,9 +2,12 @@ import assert from 'assert';
 
 import {Events as AdapterEvents} from '../../adapter';
 import {logger} from '../../utils/logger';
+import * as ZSpec from '../../zspec';
 import {BroadcastAddress} from '../../zspec/enums';
+import {EUI64} from '../../zspec/tstypes';
 import * as Zcl from '../../zspec/zcl';
 import * as ZclTypes from '../../zspec/zcl/definition/tstype';
+import * as Zdo from '../../zspec/zdo';
 import Request from '../helpers/request';
 import RequestQueue from '../helpers/requestQueue';
 import * as ZclFrameConverter from '../helpers/zclFrameConverter';
@@ -20,7 +23,7 @@ export interface ConfigureReportingItem {
     attribute: string | number | {ID: number; type: number};
     minimumReportInterval: number;
     maximumReportInterval: number;
-    reportableChange: number | [number, number];
+    reportableChange: number;
 }
 
 interface Options {
@@ -284,7 +287,7 @@ class Endpoint extends Entity {
     }
 
     public async sendPendingRequests(fastPolling: boolean): Promise<void> {
-        return this.pendingRequests.send(fastPolling);
+        return await this.pendingRequests.send(fastPolling);
     }
 
     private async sendRequest(frame: Zcl.Frame, options: OptionsWithDefaults): Promise<AdapterEvents.ZclPayload>;
@@ -319,12 +322,12 @@ class Endpoint extends Entity {
             if (device.pendingRequestTimeout > 0) {
                 logger.debug(logPrefix + `send ${frame.command.name} request immediately (sendPolicy=${options.sendPolicy})`, NS);
             }
-            return request.send();
+            return await request.send();
         }
         // If this is a bulk message, we queue directly.
         if (request.sendPolicy === 'bulk') {
             logger.debug(logPrefix + `queue request (${this.pendingRequests.size})`, NS);
-            return this.pendingRequests.queue(request);
+            return await this.pendingRequests.queue(request);
         }
 
         try {
@@ -334,7 +337,7 @@ class Endpoint extends Entity {
             // If we got a failed transaction, the device is likely sleeping.
             // Queue for transmission later.
             logger.debug(logPrefix + `queue request (transaction failed) (${error})`, NS);
-            return this.pendingRequests.queue(request);
+            return await this.pendingRequests.queue(request);
         }
     }
 
@@ -479,6 +482,23 @@ class Endpoint extends Entity {
         );
     }
 
+    public async updateSimpleDescriptor(): Promise<void> {
+        const clusterId = Zdo.ClusterId.SIMPLE_DESCRIPTOR_REQUEST;
+        const zdoPayload = Zdo.Buffalo.buildRequest(Entity.adapter!.hasZdoMessageOverhead, clusterId, this.deviceNetworkAddress, this.ID);
+        const response = await Entity.adapter!.sendZdo(this.deviceIeeeAddress, this.deviceNetworkAddress, clusterId, zdoPayload, false);
+
+        if (!Zdo.Buffalo.checkStatus(response)) {
+            throw new Zdo.StatusError(response[0]);
+        }
+
+        const simpleDescriptor = response[1];
+
+        this.profileID = simpleDescriptor.profileId;
+        this.deviceID = simpleDescriptor.deviceId;
+        this.inputClusters = simpleDescriptor.inClusterList;
+        this.outputClusters = simpleDescriptor.outClusterList;
+    }
+
     public hasBind(clusterId: number, target: Endpoint | Group): boolean {
         return this.getBindIndex(clusterId, target) !== -1;
     }
@@ -516,7 +536,6 @@ class Endpoint extends Entity {
 
     public async bind(clusterKey: number | string, target: Endpoint | Group | number): Promise<void> {
         const cluster = this.getCluster(clusterKey);
-        const type = target instanceof Endpoint ? 'endpoint' : 'group';
 
         if (typeof target === 'number') {
             target = Group.byGroupID(target) || Group.create(target);
@@ -528,21 +547,30 @@ class Endpoint extends Entity {
         logger.debug(log, NS);
 
         try {
-            await Entity.adapter!.bind(
-                this.deviceNetworkAddress,
-                this.deviceIeeeAddress,
+            const zdoClusterId = Zdo.ClusterId.BIND_REQUEST;
+            const zdoPayload = Zdo.Buffalo.buildRequest(
+                Entity.adapter!.hasZdoMessageOverhead,
+                zdoClusterId,
+                this.deviceIeeeAddress as EUI64,
                 this.ID,
                 cluster.ID,
-                destinationAddress,
-                type,
-                target instanceof Endpoint ? target.ID : undefined,
+                target instanceof Endpoint ? Zdo.UNICAST_BINDING : Zdo.MULTICAST_BINDING,
+                target instanceof Endpoint ? (target.deviceIeeeAddress as EUI64) : ZSpec.BLANK_EUI64,
+                target instanceof Group ? target.groupID : 0,
+                target instanceof Endpoint ? target.ID : 0xff,
             );
+
+            const response = await Entity.adapter!.sendZdo(this.deviceIeeeAddress, this.deviceNetworkAddress, zdoClusterId, zdoPayload, false);
+
+            if (!Zdo.Buffalo.checkStatus(response)) {
+                throw new Zdo.StatusError(response[0]);
+            }
 
             this.addBindingInternal(cluster, target);
         } catch (error) {
             const err = error as Error;
             err.message = `${log} failed (${err.message})`;
-            logger.debug((err as Error).stack!, NS);
+            logger.debug(err.stack!, NS);
             throw error;
         }
     }
@@ -565,7 +593,6 @@ class Endpoint extends Entity {
             target = groupTarget;
         }
 
-        const type = target instanceof Endpoint ? 'endpoint' : 'group';
         const destinationAddress = target instanceof Endpoint ? target.deviceIeeeAddress : target.groupID;
         const log = `${action} from '${target instanceof Endpoint ? `${destinationAddress}/${target.ID}` : destinationAddress}'`;
         const index = this.getBindIndex(cluster.ID, target);
@@ -578,22 +605,35 @@ class Endpoint extends Entity {
         logger.debug(log, NS);
 
         try {
-            await Entity.adapter!.unbind(
-                this.deviceNetworkAddress,
-                this.deviceIeeeAddress,
+            const zdoClusterId = Zdo.ClusterId.UNBIND_REQUEST;
+            const zdoPayload = Zdo.Buffalo.buildRequest(
+                Entity.adapter!.hasZdoMessageOverhead,
+                zdoClusterId,
+                this.deviceIeeeAddress as EUI64,
                 this.ID,
                 cluster.ID,
-                destinationAddress,
-                type,
-                target instanceof Endpoint ? target.ID : undefined,
+                target instanceof Endpoint ? Zdo.UNICAST_BINDING : Zdo.MULTICAST_BINDING,
+                target instanceof Endpoint ? (target.deviceIeeeAddress as EUI64) : ZSpec.BLANK_EUI64,
+                target instanceof Group ? target.groupID : 0,
+                target instanceof Endpoint ? target.ID : 0xff,
             );
+
+            const response = await Entity.adapter!.sendZdo(this.deviceIeeeAddress, this.deviceNetworkAddress, zdoClusterId, zdoPayload, false);
+
+            if (!Zdo.Buffalo.checkStatus(response)) {
+                if (response[0] === Zdo.Status.NO_ENTRY) {
+                    logger.debug(`${log} no entry on device, removing entry from database.`, NS);
+                } else {
+                    throw new Zdo.StatusError(response[0]);
+                }
+            }
 
             this._binds.splice(index, 1);
             this.save();
         } catch (error) {
             const err = error as Error;
             err.message = `${log} failed (${err.message})`;
-            logger.debug((err as Error).stack!, NS);
+            logger.debug(err.stack!, NS);
             throw error;
         }
     }
@@ -714,10 +754,10 @@ class Endpoint extends Entity {
             optionsWithDefaults.reservedBits,
         );
 
-        const log =
+        const createLogMessage = (): string =>
             `CommandResponse ${this.deviceIeeeAddress}/${this.ID} ` +
             `${cluster.name}.${command.name}(${JSON.stringify(payload)}, ${JSON.stringify(optionsWithDefaults)})`;
-        logger.debug(log, NS);
+        logger.debug(createLogMessage, NS);
 
         try {
             await this.sendRequest(frame, optionsWithDefaults, async (f) => {
@@ -739,8 +779,8 @@ class Endpoint extends Entity {
             });
         } catch (error) {
             const err = error as Error;
-            err.message = `${log} failed (${err.message})`;
-            logger.debug((err as Error).stack!, NS);
+            err.message = `${createLogMessage()} failed (${err.message})`;
+            logger.debug(err.stack!, NS);
             throw error;
         }
     }
@@ -804,7 +844,7 @@ class Endpoint extends Entity {
         attributes: (string | number)[] | ConfigureReportingItem[],
         fallbackManufacturerCode: number | undefined, // XXX: problematic undefined for a "fallback"?
         caller: string,
-    ): number {
+    ): number | undefined {
         const manufacturerCodes = new Set(
             attributes.map((nameOrID): number | undefined => {
                 let attributeID;
@@ -902,10 +942,10 @@ class Endpoint extends Entity {
             optionsWithDefaults.reservedBits,
         );
 
-        const log =
+        const createLogMessage = (): string =>
             `ZCL command ${this.deviceIeeeAddress}/${this.ID} ` +
             `${cluster.name}.${command.name}(${JSON.stringify(logPayload ? logPayload : payload)}, ${JSON.stringify(optionsWithDefaults)})`;
-        logger.debug(log, NS);
+        logger.debug(createLogMessage, NS);
 
         try {
             const result = await this.sendRequest(frame, optionsWithDefaults);
@@ -919,8 +959,8 @@ class Endpoint extends Entity {
             }
         } catch (error) {
             const err = error as Error;
-            err.message = `${log} failed (${err.message})`;
-            logger.debug((err as Error).stack!, NS);
+            err.message = `${createLogMessage()} failed (${err.message})`;
+            logger.debug(err.stack!, NS);
             throw error;
         }
     }
@@ -952,10 +992,12 @@ class Endpoint extends Entity {
             optionsWithDefaults.reservedBits,
         );
 
-        const log =
-            `ZCL command broadcast ${this.deviceIeeeAddress}/${sourceEndpoint} to ${destination}/${endpoint} ` +
-            `${cluster.name}.${command.name}(${JSON.stringify({payload, optionsWithDefaults})})`;
-        logger.debug(log, NS);
+        logger.debug(
+            () =>
+                `ZCL command broadcast ${this.deviceIeeeAddress}/${sourceEndpoint} to ${destination}/${endpoint} ` +
+                `${cluster.name}.${command.name}(${JSON.stringify({payload, optionsWithDefaults})})`,
+            NS,
+        );
 
         // if endpoint===0xFF ("broadcast endpoint"), deliver to all endpoints supporting cluster, should be avoided whenever possible
         await Entity.adapter!.sendZclFrameToAll(endpoint, frame, sourceEndpoint, destination);

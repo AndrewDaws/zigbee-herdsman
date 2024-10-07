@@ -4,6 +4,7 @@ import events from 'events';
 
 import {Adapter, Events as AdapterEvents} from '../adapter';
 import {logger} from '../utils/logger';
+import {COORDINATOR_ADDRESS, GP_ENDPOINT, GP_GROUP_ID} from '../zspec/consts';
 import {BroadcastAddress} from '../zspec/enums';
 import * as Zcl from '../zspec/zcl';
 import ZclTransactionSequenceNumber from './helpers/zclTransactionSequenceNumber';
@@ -55,15 +56,15 @@ class GreenPower extends events.EventEmitter<GreenPowerEventMap> {
         switch ((payload.options >> 5) & 3) {
             case 0b10: // Groupcast to pre-commissioned GroupID
             case 0b01: // Groupcast to DGroupID
-                payload.sinkGroupID = this.adapter.greenPowerGroup;
+                payload.sinkGroupID = GP_GROUP_ID;
                 break;
             /* istanbul ignore next */
             case 0b00: // Full unicast forwarding
             case 0b11: {
                 // Lightweight unicast forwarding
-                const coordinator = await this.adapter.getCoordinator();
-                payload.sinkIEEEAddr = coordinator.ieeeAddr;
-                payload.sinkNwkAddr = coordinator.networkAddress;
+                const coordinatorIEEE = await this.adapter.getCoordinatorIEEE();
+                payload.sinkIEEEAddr = coordinatorIEEE;
+                payload.sinkNwkAddr = COORDINATOR_ADDRESS;
                 break;
             }
             /* istanbul ignore next */
@@ -89,11 +90,20 @@ class GreenPower extends events.EventEmitter<GreenPowerEventMap> {
         // the proxy MAY send it as unicast to selected proxy.
         // This attempts to mirror logic from commit 92f77cc5.
         if (dataPayload.wasBroadcast) {
-            return this.adapter.sendZclFrameToAll(242, replyFrame, 242, BroadcastAddress.RX_ON_WHEN_IDLE);
+            return await this.adapter.sendZclFrameToAll(GP_ENDPOINT, replyFrame, GP_ENDPOINT, BroadcastAddress.RX_ON_WHEN_IDLE);
         } else {
             const device = Device.byNetworkAddress(frame.payload.gppNwkAddr);
             assert(device, 'Failed to find green power proxy device');
-            return this.adapter.sendZclFrameToEndpoint(device.ieeeAddr, frame.payload.gppNwkAddr, 242, replyFrame, 10000, false, false, 242);
+            return await this.adapter.sendZclFrameToEndpoint(
+                device.ieeeAddr,
+                frame.payload.gppNwkAddr,
+                GP_ENDPOINT,
+                replyFrame,
+                10000,
+                false,
+                false,
+                GP_ENDPOINT,
+            );
         }
     }
 
@@ -151,7 +161,7 @@ class GreenPower extends events.EventEmitter<GreenPowerEventMap> {
                             payloadReply,
                             {},
                         );
-                        await this.adapter.sendZclFrameToAll(242, replyFrame, 242, BroadcastAddress.RX_ON_WHEN_IDLE);
+                        await this.adapter.sendZclFrameToAll(GP_ENDPOINT, replyFrame, GP_ENDPOINT, BroadcastAddress.RX_ON_WHEN_IDLE);
 
                         const payloadPairing = {
                             options: 0b0000000110101000, // Disable encryption
@@ -223,7 +233,7 @@ class GreenPower extends events.EventEmitter<GreenPowerEventMap> {
                         {},
                     );
 
-                    await this.adapter.sendZclFrameToAll(242, replyFrame, 242, BroadcastAddress.RX_ON_WHEN_IDLE);
+                    await this.adapter.sendZclFrameToAll(GP_ENDPOINT, replyFrame, GP_ENDPOINT, BroadcastAddress.RX_ON_WHEN_IDLE);
                     break;
                 }
                 /* istanbul ignore next */
@@ -258,11 +268,11 @@ class GreenPower extends events.EventEmitter<GreenPowerEventMap> {
         );
 
         if (networkAddress === undefined) {
-            await this.adapter.sendZclFrameToAll(242, frame, 242, BroadcastAddress.RX_ON_WHEN_IDLE);
+            await this.adapter.sendZclFrameToAll(GP_ENDPOINT, frame, GP_ENDPOINT, BroadcastAddress.RX_ON_WHEN_IDLE);
         } else {
             const device = Device.byNetworkAddress(networkAddress);
             assert(device, 'Failed to find device to permit GP join on');
-            await this.adapter.sendZclFrameToEndpoint(device.ieeeAddr, networkAddress, 242, frame, 10000, false, false, 242);
+            await this.adapter.sendZclFrameToEndpoint(device.ieeeAddr, networkAddress, GP_ENDPOINT, frame, 10000, false, false, GP_ENDPOINT);
         }
     }
 }

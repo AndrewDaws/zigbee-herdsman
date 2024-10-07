@@ -544,7 +544,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
             return EzspStatus.ERROR_COMMAND_TOO_LONG;
         }
 
-        return this.queue.execute<EzspStatus>(async () => {
+        return await this.queue.execute<EzspStatus>(async () => {
             let status: EzspStatus = EzspStatus.ASH_ERROR_TIMEOUTS; // will be overwritten below as necessary
             const frameId = sendBuffalo.getFrameId();
             const frameString = `[FRAME: ID=${frameId}:"${EzspFrameID[frameId]}" Seq=${sequence} Len=${length}]`;
@@ -1223,7 +1223,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      * @returns EzspStatus
      */
     public async ezspSetEndpointFlags(endpoint: number, flags: EzspEndpointFlag): Promise<SLStatus> {
-        return this.ezspSetValue(EzspValueId.ENDPOINT_FLAGS, 3, [endpoint, lowByte(flags), highByte(flags)]);
+        return await this.ezspSetValue(EzspValueId.ENDPOINT_FLAGS, 3, [endpoint, lowByte(flags), highByte(flags)]);
     }
 
     /**
@@ -1299,7 +1299,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      * @returns
      */
     public async ezspSetExtendedSecurityBitmask(mask: EmberExtendedSecurityBitmask): Promise<SLStatus> {
-        return this.ezspSetValue(EzspValueId.EXTENDED_SECURITY_BITMASK, 2, [lowByte(mask), highByte(mask)]);
+        return await this.ezspSetValue(EzspValueId.EXTENDED_SECURITY_BITMASK, 2, [lowByte(mask), highByte(mask)]);
     }
 
     /**
@@ -1321,7 +1321,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      * @returns
      */
     public async ezspStartWritingStackTokens(): Promise<SLStatus> {
-        return this.ezspSetValue(EzspValueId.STACK_TOKEN_WRITING, 1, [1]);
+        return await this.ezspSetValue(EzspValueId.STACK_TOKEN_WRITING, 1, [1]);
     }
 
     /**
@@ -1329,7 +1329,57 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      * @returns
      */
     public async ezspStopWritingStackTokens(): Promise<SLStatus> {
-        return this.ezspSetValue(EzspValueId.STACK_TOKEN_WRITING, 1, [0]);
+        return await this.ezspSetValue(EzspValueId.STACK_TOKEN_WRITING, 1, [0]);
+    }
+
+    /**
+     * Wrapper for `ezspSetValue`.
+     *
+     * Set NWK layer outgoing frame counter (intended for device restoration purposes).
+     * Caveats:
+     *   - Can only be called before NetworkInit / FormNetwork / JoinNetwork, when sl_zigbee_network_state()==SL_ZIGBEE_NO_NETWORK.
+     *   - This function should be called before ::sl_zigbee_set_initial_security_state, and the SL_ZIGBEE_NO_FRAME_COUNTER_RESET
+     *     bitmask should be added to the initial security bitmask when ::emberSetInitialSecurityState is called.
+     *   - If used in multi-network context, be sure to call ::sl_zigbee_set_current_network() prior to calling this function.
+     *
+     * @param desiredValue The desired outgoing NWK frame counter value.
+     *        This should needs to be less than MAX_INT32U_VALUE to ensure that rollover does not occur on the next encrypted transmission.
+     * @returns
+     * - SL_STATUS_OK if calling context is valid (sl_zigbee_network_state() == SL_ZIGBEE_NO_NETWORK) and desiredValue < MAX_INT32U_VALUE.
+     * - SL_STATUS_INVALID_STATE.
+     */
+    public async ezspSetNWKFrameCounter(frameCounter: number): Promise<SLStatus> {
+        return await this.ezspSetValue(EzspValueId.NWK_FRAME_COUNTER, 4, [
+            frameCounter & 0xff,
+            (frameCounter >> 8) & 0xff,
+            (frameCounter >> 16) & 0xff,
+            (frameCounter >> 24) & 0xff,
+        ]);
+    }
+
+    /**
+     * Wrapper for `ezspSetValue`.
+     *
+     * Function to set APS layer outgoing frame counter for Trust Center Link Key (intended for device restoration purposes).
+     * Caveats:
+     *    - Can only be called before NetworkInit / FormNetwork / JoinNetwork, when sl_zigbee_network_state()==SL_ZIGBEE_NO_NETWORK.
+     *    - This function should be called before ::sl_zigbee_set_initial_security_state, and the SL_ZIGBEE_NO_FRAME_COUNTER_RESET
+     *      bitmask should be added to the initial security bitmask when ::emberSetInitialSecurityState is called.
+     *    - If used in multi-network context, be sure to call ::sl_zigbee_set_current_network() prior to calling this function.
+     *
+     * @param desiredValue The desired outgoing APS frame counter value.
+     *        This should needs to be less than MAX_INT32U_VALUE to ensure that rollover does not occur on the next encrypted transmission.
+     * @returns
+     * - SL_STATUS_OK if calling context is valid (sl_zigbee_network_state() == SL_ZIGBEE_NO_NETWORK) and desiredValue < MAX_INT32U_VALUE.
+     * - SL_STATUS_INVALID_STATE.
+     */
+    public async ezspSetAPSFrameCounter(frameCounter: number): Promise<SLStatus> {
+        return await this.ezspSetValue(EzspValueId.APS_FRAME_COUNTER, 4, [
+            frameCounter & 0xff,
+            (frameCounter >> 8) & 0xff,
+            (frameCounter >> 16) & 0xff,
+            (frameCounter >> 24) & 0xff,
+        ]);
     }
 
     //-----------------------------------------------------------------------------//
@@ -2748,7 +2798,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      */
     ezspNetworkFoundHandler(networkFound: EmberZigbeeNetwork, lastHopLqi: number, lastHopRssi: number): void {
         logger.debug(
-            `ezspNetworkFoundHandler(): callback called with: [networkFound=${JSON.stringify(networkFound)}], [lastHopLqi=${lastHopLqi}], [lastHopRssi=${lastHopRssi}]`,
+            () =>
+                `ezspNetworkFoundHandler(): callback called with: [networkFound=${JSON.stringify(networkFound)}], [lastHopLqi=${lastHopLqi}], [lastHopRssi=${lastHopRssi}]`,
             NS,
         );
     }
@@ -2767,7 +2818,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      * Callback
      * This function returns an unused panID and channel pair found via the find
      * unused panId scan procedure.
-     * @param The unused panID which has been found.
+     * @param panId The unused panID which has been found.
      * @param channel uint8_t The channel that the unused panID was found on.
      */
     ezspUnusedPanIdFoundHandler(panId: PanId, channel: number): void {
@@ -4675,7 +4726,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      */
     ezspRemoteSetBindingHandler(entry: EmberBindingTableEntry, index: number, policyDecision: SLStatus): void {
         logger.debug(
-            `ezspRemoteSetBindingHandler(): callback called with: [entry=${JSON.stringify(entry)}], [index=${index}], [policyDecision=${SLStatus[policyDecision]}]`,
+            () =>
+                `ezspRemoteSetBindingHandler(): callback called with: [entry=${JSON.stringify(entry)}], [index=${index}], [policyDecision=${SLStatus[policyDecision]}]`,
             NS,
         );
     }
@@ -4973,7 +5025,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
         messageContents?: Buffer,
     ): void {
         logger.debug(
-            `ezspMessageSentHandler(): callback called with: [status=${SLStatus[status]}], [type=${EmberOutgoingMessageType[type]}], ` +
+            () =>
+                `ezspMessageSentHandler(): callback called with: [status=${SLStatus[status]}], [type=${EmberOutgoingMessageType[type]}], ` +
                 `[indexOrDestination=${indexOrDestination}], [apsFrame=${JSON.stringify(apsFrame)}], [messageTag=${messageTag}]` +
                 (messageContents ? `, [messageContents=${messageContents.toString('hex')}]` : ''),
             NS,
@@ -5240,7 +5293,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
         messageContents: Buffer,
     ): void {
         logger.debug(
-            `ezspIncomingMessageHandler(): callback called with: [type=${EmberIncomingMessageType[type]}], [apsFrame=${JSON.stringify(apsFrame)}], ` +
+            () =>
+                `ezspIncomingMessageHandler(): callback called with: [type=${EmberIncomingMessageType[type]}], [apsFrame=${JSON.stringify(apsFrame)}], ` +
                 `[packetInfo:${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
             NS,
         );
@@ -5757,7 +5811,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      */
     ezspMacPassthroughMessageHandler(messageType: EmberMacPassthroughType, packetInfo: EmberRxPacketInfo, messageContents: Buffer): void {
         logger.debug(
-            `ezspMacPassthroughMessageHandler(): callback called with: [messageType=${messageType}], [packetInfo=${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
+            () =>
+                `ezspMacPassthroughMessageHandler(): callback called with: [messageType=${messageType}], [packetInfo=${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
             NS,
         );
     }
@@ -5778,7 +5833,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
         messageContents: Buffer,
     ): void {
         logger.debug(
-            `ezspMacFilterMatchMessageHandler(): callback called with: [filterIndexMatch=${filterIndexMatch}], [legacyPassthroughType=${legacyPassthroughType}], ` +
+            () =>
+                `ezspMacFilterMatchMessageHandler(): callback called with: [filterIndexMatch=${filterIndexMatch}], [legacyPassthroughType=${legacyPassthroughType}], ` +
                 `[packetInfo=${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
             NS,
         );
@@ -7727,7 +7783,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      */
     ezspIncomingBootloadMessageHandler(longId: EUI64, packetInfo: EmberRxPacketInfo, messageContents: Buffer): void {
         logger.debug(
-            `ezspIncomingBootloadMessageHandler(): callback called with: [longId=${longId}], [packetInfo=${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
+            () =>
+                `ezspIncomingBootloadMessageHandler(): callback called with: [longId=${longId}], [packetInfo=${JSON.stringify(packetInfo)}], [messageContents=${messageContents.toString('hex')}]`,
             NS,
         );
     }
@@ -8080,7 +8137,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
         packetInfo: EmberRxPacketInfo,
     ): void {
         logger.debug(
-            `ezspZllNetworkFoundHandler(): callback called with: [networkInfo=${networkInfo}], [isDeviceInfoNull=${isDeviceInfoNull}], [deviceInfo=${deviceInfo}], [packetInfo=${JSON.stringify(packetInfo)}]`,
+            () =>
+                `ezspZllNetworkFoundHandler(): callback called with: [networkInfo=${networkInfo}], [isDeviceInfoNull=${isDeviceInfoNull}], [deviceInfo=${deviceInfo}], [packetInfo=${JSON.stringify(packetInfo)}]`,
             NS,
         );
     }
@@ -8103,7 +8161,7 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
      */
     ezspZllAddressAssignmentHandler(addressInfo: EmberZllAddressAssignment, packetInfo: EmberRxPacketInfo): void {
         logger.debug(
-            `ezspZllAddressAssignmentHandler(): callback called with: [addressInfo=${addressInfo}], [packetInfo=${JSON.stringify(packetInfo)}]`,
+            () => `ezspZllAddressAssignmentHandler(): callback called with: [addressInfo=${addressInfo}], [packetInfo=${JSON.stringify(packetInfo)}]`,
             NS,
         );
     }
@@ -8511,7 +8569,8 @@ export class Ezsp extends EventEmitter<EmberEzspEventMap> {
         gpdCommandPayload: Buffer,
     ): void {
         logger.debug(
-            `ezspGpepIncomingMessageHandler(): callback called with: [status=${EmberGPStatus[status] ?? status}], [gpdLink=${gpdLink}], ` +
+            () =>
+                `ezspGpepIncomingMessageHandler(): callback called with: [status=${EmberGPStatus[status] ?? status}], [gpdLink=${gpdLink}], ` +
                 `[sequenceNumber=${sequenceNumber}], [addr=${JSON.stringify(addr)}], [gpdfSecurityLevel=${EmberGpSecurityLevel[gpdfSecurityLevel]}], ` +
                 `[gpdfSecurityKeyType=${EmberGpKeyType[gpdfSecurityKeyType]}], [autoCommissioning=${autoCommissioning}], ` +
                 `[bidirectionalInfo=${bidirectionalInfo}], [gpdSecurityFrameCounter=${gpdSecurityFrameCounter}], [gpdCommandId=${gpdCommandId}], ` +

@@ -20,7 +20,7 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
     },
     [ZiGateMessageCode.DeviceAnnounce]: {
         response: [
-            {name: 'shortAddress', parameterType: ParameterType.UINT16BE},
+            {name: 'shortAddress', parameterType: ParameterType.UINT16},
             {name: 'ieee', parameterType: ParameterType.IEEEADDR},
             {name: 'MACcapability', parameterType: ParameterType.MACCAPABILITY},
             // MAC capability
@@ -46,7 +46,7 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
             // 128 – 244 = Failed (ZigBee event codes)
             // Packet Type: The value of the initiating command request.
             {name: 'sequence', parameterType: ParameterType.UINT8}, // <sequence number: uint8_t>
-            {name: 'packetType', parameterType: ParameterType.UINT16BE}, // <Packet Type: uint16_t>
+            {name: 'packetType', parameterType: ParameterType.UINT16}, // <Packet Type: uint16_t>
 
             // from 3.1d
             // {name: 'requestSent', parameterType: ParameterType.MAYBE_UINT8},// <requestSent: uint8_t>  - 1 if a request been sent to
@@ -71,8 +71,8 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
     [ZiGateMessageCode.DataIndication]: {
         response: [
             {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
-            {name: 'profileID', parameterType: ParameterType.UINT16BE}, // <Profile ID: uint16_t>
-            {name: 'clusterID', parameterType: ParameterType.UINT16BE}, // <cluster ID: uint16_t>
+            {name: 'profileID', parameterType: ParameterType.UINT16}, // <Profile ID: uint16_t>
+            {name: 'clusterID', parameterType: ParameterType.UINT16}, // <cluster ID: uint16_t>
             {name: 'sourceEndpoint', parameterType: ParameterType.UINT8}, // <source endpoint: uint8_t>
             {name: 'destinationEndpoint', parameterType: ParameterType.UINT8}, // <destination endpoint: uint8_t>
             {name: 'sourceAddressMode', parameterType: ParameterType.UINT8}, // <source address mode: uint8_t>
@@ -119,9 +119,9 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
             // {name: 'sourceEndpoint', parameterType: ParameterType.UINT8}, // <source endpoint: uint8_t>
             // {name: 'destinationAddressMode', parameterType: ParameterType.UINT8},
             // // <destination address mode: uint8_t>
-            {name: 'destinationAddress', parameterType: ParameterType.UINT16BE},
+            {name: 'destinationAddress', parameterType: ParameterType.UINT16},
             {name: 'destinationEndpoint', parameterType: ParameterType.UINT8}, // <destination endpoint: uint8_t>
-            {name: 'clusterID', parameterType: ParameterType.UINT16BE},
+            {name: 'clusterID', parameterType: ParameterType.UINT16},
             // // <destination address: uint16_t or uint64_t>
             {name: 'seqNumber', parameterType: ParameterType.UINT8}, // <seq number: uint8_t>
         ],
@@ -158,9 +158,9 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
     },
     [ZiGateMessageCode.NetworkState]: {
         response: [
-            {name: 'shortAddress', parameterType: ParameterType.UINT16BE}, // <Short Address: uint16_t>
+            {name: 'shortAddress', parameterType: ParameterType.UINT16}, // <Short Address: uint16_t>
             {name: 'extendedAddress', parameterType: ParameterType.IEEEADDR}, // <Extended Address: uint64_t>
-            {name: 'PANID', parameterType: ParameterType.UINT16BE}, // <PAN ID: uint16_t>
+            {name: 'PANID', parameterType: ParameterType.UINT16}, // <PAN ID: uint16_t>
             {name: 'ExtPANID', parameterType: ParameterType.IEEEADDR}, // <Ext PAN ID: uint64_t>
             {name: 'Channel', parameterType: ParameterType.UINT8}, // <Channel: uint8_t>
         ],
@@ -179,7 +179,7 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
             // 0 = Joined existing network
             // 1 = Formed new network
             // 128 – 244 = Failed (ZigBee event codes)
-            {name: 'shortAddress', parameterType: ParameterType.UINT16BE}, // <short address: uint16_t>
+            {name: 'shortAddress', parameterType: ParameterType.UINT16}, // <short address: uint16_t>
             // {name: 'extendedAddress', parameterType: ParameterType.IEEEADDR}, // <extended address:uint64_t>
             // {name: 'channel', parameterType: ParameterType.UINT8}, // <channel: uint8_t>
         ],
@@ -190,59 +190,59 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
             {name: 'rejoin', parameterType: ParameterType.UINT8}, // <rejoin status: uint8_t>
         ],
     },
-    [ZiGateMessageCode.ManagementLeaveResponse]: {
-        response: [
-            {name: 'sqn', parameterType: ParameterType.UINT8},
-            {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
-        ],
-    },
+    // [ZiGateMessageCode.ManagementLeaveResponse]: {
+    //     response: [
+    //         {name: 'sqn', parameterType: ParameterType.UINT8},
+    //         {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
+    //     ],
+    // },
     [ZiGateMessageCode.RouterDiscoveryConfirm]: {
         response: [
             {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
             // {name: 'nwkStatus', parameterType: ParameterType.UINT8}, // <nwk status: uint8_t>
-            // {name: 'dstAddress', parameterType: ParameterType.UINT16BE}, // <nwk status: uint16_t>
+            // {name: 'dstAddress', parameterType: ParameterType.UINT16}, // <nwk status: uint16_t>
         ],
     },
-    [ZiGateMessageCode.SimpleDescriptorResponse]: {
-        response: [
-            {name: 'sourceEndpoint', parameterType: ParameterType.UINT8}, //<source endpoint: uint8_t>
-            {name: 'profile ID', parameterType: ParameterType.UINT16BE}, // <profile ID: uint16_t>
-            {name: 'clusterID', parameterType: ParameterType.UINT16BE}, // <cluster ID: uint16_t>
-            {name: 'attributeList', parameterType: ParameterType.LIST_UINT16BE}, // <attribute list: data each entry is uint16_t>
-        ],
-    },
-    [ZiGateMessageCode.ManagementLQIResponse]: {
-        response: [
-            {name: 'sequence', parameterType: ParameterType.UINT8}, // <Sequence number: uint8_t>
-            {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
-            {name: 'neighbourTableEntries', parameterType: ParameterType.UINT8}, // <Neighbour Table Entries : uint8_t>
-            {name: 'neighbourTableListCount', parameterType: ParameterType.UINT8}, // <Neighbour Table List Count : uint8_t>
-            {name: 'startIndex', parameterType: ParameterType.UINT8}, // <Start Index : uint8_t>
-            // XXX: broken? automatic ziGateObject parsing will always read below as-is, even if it's not supposed to
-            // @TODO list TYPE
-            // <List of Entries elements described below :>
-            // Note: If Neighbour Table list count is 0, there are no elements in the list.
-            {name: 'NWKAddress', parameterType: ParameterType.UINT16BE}, // NWK Address : uint16_t
-            {name: 'Extended PAN ID', parameterType: ParameterType.IEEEADDR}, // Extended PAN ID : uint64_t
-            {name: 'IEEE Address', parameterType: ParameterType.IEEEADDR}, // IEEE Address : uint64_t
-            {name: 'Depth', parameterType: ParameterType.UINT8}, // Depth : uint_t
-            {name: 'linkQuality', parameterType: ParameterType.UINT8}, // Link Quality : uint8_t
-            {name: 'bitMap', parameterType: ParameterType.UINT8}, // Bit map of attributes Described below: uint8_t
-            // bit 0-1 Device Type
-            // (0-Coordinator 1-Router 2-End Device)
-            // bit 2-3 Permit Join status
-            // (1- On 0-Off)
-            // bit 4-5 Relationship
-            // (0-Parent 1-Child 2-Sibling)
-            // bit 6-7 Rx On When Idle status
-            // (1-On 0-Off)
-            {name: 'srcAddress', parameterType: ParameterType.UINT16BE}, // <Src Address : uint16_t> ( only from v3.1a)
-        ],
-    },
+    // [ZiGateMessageCode.SimpleDescriptorResponse]: {
+    //     response: [
+    //         {name: 'sourceEndpoint', parameterType: ParameterType.UINT8}, //<source endpoint: uint8_t>
+    //         {name: 'profile ID', parameterType: ParameterType.UINT16}, // <profile ID: uint16_t>
+    //         {name: 'clusterID', parameterType: ParameterType.UINT16}, // <cluster ID: uint16_t>
+    //         {name: 'attributeList', parameterType: ParameterType.LIST_UINT16}, // <attribute list: data each entry is uint16_t>
+    //     ],
+    // },
+    // [ZiGateMessageCode.ManagementLQIResponse]: {
+    //     response: [
+    //         {name: 'sequence', parameterType: ParameterType.UINT8}, // <Sequence number: uint8_t>
+    //         {name: 'status', parameterType: ParameterType.UINT8}, // <status: uint8_t>
+    //         {name: 'neighbourTableEntries', parameterType: ParameterType.UINT8}, // <Neighbour Table Entries : uint8_t>
+    //         {name: 'neighbourTableListCount', parameterType: ParameterType.UINT8}, // <Neighbour Table List Count : uint8_t>
+    //         {name: 'startIndex', parameterType: ParameterType.UINT8}, // <Start Index : uint8_t>
+    //         // XXX: broken? automatic ziGateObject parsing will always read below as-is, even if it's not supposed to
+    //         // @TODO list TYPE
+    //         // <List of Entries elements described below :>
+    //         // Note: If Neighbour Table list count is 0, there are no elements in the list.
+    //         {name: 'NWKAddress', parameterType: ParameterType.UINT16}, // NWK Address : uint16_t
+    //         {name: 'Extended PAN ID', parameterType: ParameterType.IEEEADDR}, // Extended PAN ID : uint64_t
+    //         {name: 'IEEE Address', parameterType: ParameterType.IEEEADDR}, // IEEE Address : uint64_t
+    //         {name: 'Depth', parameterType: ParameterType.UINT8}, // Depth : uint_t
+    //         {name: 'linkQuality', parameterType: ParameterType.UINT8}, // Link Quality : uint8_t
+    //         {name: 'bitMap', parameterType: ParameterType.UINT8}, // Bit map of attributes Described below: uint8_t
+    //         // bit 0-1 Device Type
+    //         // (0-Coordinator 1-Router 2-End Device)
+    //         // bit 2-3 Permit Join status
+    //         // (1- On 0-Off)
+    //         // bit 4-5 Relationship
+    //         // (0-Parent 1-Child 2-Sibling)
+    //         // bit 6-7 Rx On When Idle status
+    //         // (1-On 0-Off)
+    //         {name: 'srcAddress', parameterType: ParameterType.UINT16}, // <Src Address : uint16_t> ( only from v3.1a)
+    //     ],
+    // },
     [ZiGateMessageCode.PDMEvent]: {
         response: [
             {name: 'eventStatus', parameterType: ParameterType.UINT8}, // <event status: uint8_t>
-            {name: 'recordID', parameterType: ParameterType.UINT32BE}, // <record ID: uint32_t>
+            {name: 'recordID', parameterType: ParameterType.UINT32}, // <record ID: uint32_t>
         ],
     },
     [ZiGateMessageCode.PDMLoaded]: {
@@ -281,8 +281,8 @@ export const ZiGateMessage: {[k: number]: ZiGateMessageType} = {
     },
     [ZiGateMessageCode.AddGroupResponse]: {
         response: [
-            {name: 'status', parameterType: ParameterType.UINT16BE},
-            {name: 'groupAddress', parameterType: ParameterType.UINT16BE},
+            {name: 'status', parameterType: ParameterType.UINT16},
+            {name: 'groupAddress', parameterType: ParameterType.UINT16},
         ],
     },
 };

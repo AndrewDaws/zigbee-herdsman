@@ -6,13 +6,16 @@ import equals from 'fast-deep-equal/es6';
 
 import {Wait, Waitress} from '../../../utils';
 import {logger} from '../../../utils/logger';
+import * as ZSpec from '../../../zspec';
 import {Clusters} from '../../../zspec/zcl/definition/cluster';
+import * as Zdo from '../../../zspec/zdo';
+import {GenericZdoResponse} from '../../../zspec/zdo/definition/tstypes';
 import {EZSPAdapterBackup} from '../adapter/backup';
 import * as TsType from './../../tstype';
 import {ParamsDesc} from './commands';
-import {Ezsp, EZSPFrameData, EZSPZDOResponseFrameData} from './ezsp';
+import {Ezsp, EZSPFrameData} from './ezsp';
 import {Multicast} from './multicast';
-import {EmberApsOption, EmberJoinDecision, EmberKeyData, EmberNodeType, EmberStatus, EmberZDOCmd, uint8_t, uint16_t} from './types';
+import {EmberApsOption, EmberJoinDecision, EmberKeyData, EmberNodeType, EmberStatus, uint8_t, uint16_t} from './types';
 import {
     EmberDerivedKeyType,
     EmberDeviceUpdate,
@@ -52,13 +55,14 @@ interface AddEndpointParameters {
 }
 
 type EmberFrame = {
-    address: number;
+    address: number | string;
     payload: Buffer;
     frame: EmberApsFrame;
+    zdoResponse?: GenericZdoResponse;
 };
 
 type EmberWaitressMatcher = {
-    address: number;
+    address: number | string;
     clusterId: number;
     sequence: number;
 };
@@ -78,6 +82,7 @@ export interface EmberIncomingMessage {
     addressIndex: number;
     message: Buffer;
     senderEui64: EmberEUI64;
+    zdoResponse?: GenericZdoResponse;
 }
 
 const IEEE_PREFIX_MFG_ID: IeeeMfg[] = [
@@ -92,7 +97,6 @@ export class Driver extends EventEmitter {
     // @ts-expect-error XXX: init in startup
     public ezsp: Ezsp;
     private nwkOpt: TsType.NetworkOptions;
-    private greenPowerGroup: number;
     // @ts-expect-error XXX: init in startup
     public networkParams: EmberNetworkParameters;
     // @ts-expect-error XXX: init in startup
@@ -114,12 +118,11 @@ export class Driver extends EventEmitter {
     private serialOpt: TsType.SerialPortOptions;
     public backupMan: EZSPAdapterBackup;
 
-    constructor(serialOpt: TsType.SerialPortOptions, nwkOpt: TsType.NetworkOptions, greenPowerGroup: number, backupPath: string) {
+    constructor(serialOpt: TsType.SerialPortOptions, nwkOpt: TsType.NetworkOptions, backupPath: string) {
         super();
 
         this.nwkOpt = nwkOpt;
         this.serialOpt = serialOpt;
-        this.greenPowerGroup = greenPowerGroup;
         this.waitress = new Waitress<EmberFrame, EmberWaitressMatcher>(this.waitressValidator, this.waitressTimeoutFormatter);
         this.backupMan = new EZSPAdapterBackup(this, backupPath);
     }
@@ -168,7 +171,7 @@ export class Driver extends EventEmitter {
         logger.debug('Stopping driver', NS);
 
         if (this.ezsp) {
-            return this.ezsp.close(emitClose);
+            return await this.ezsp.close(emitClose);
         }
     }
 
@@ -284,7 +287,6 @@ export class Driver extends EventEmitter {
         this.ieee = new EmberEUI64(ieee);
         logger.debug('Network ready', NS);
         this.ezsp.on('frame', this.handleFrame.bind(this));
-        this.handleNodeJoined(nwk, this.ieee);
         logger.debug(`EZSP nwk=${nwk}, IEEE=0x${this.ieee}`, NS);
         const linkResult = await this.getKey(EmberKeyType.TRUST_CENTER_LINK_KEY);
         logger.debug(`TRUST_CENTER_LINK_KEY: ${JSON.stringify(linkResult)}`, NS);
@@ -296,7 +298,7 @@ export class Driver extends EventEmitter {
 
         this.multicast = new Multicast(this);
         await this.multicast.startup([]);
-        await this.multicast.subscribe(this.greenPowerGroup, 242);
+        await this.multicast.subscribe(ZSpec.GP_GROUP_ID, ZSpec.GP_ENDPOINT);
         // await this.multicast.subscribe(1, 901);
 
         return result;
@@ -363,25 +365,70 @@ export class Driver extends EventEmitter {
     private handleFrame(frameName: string, frame: EZSPFrameData): void {
         switch (true) {
             case frameName === 'incomingMessageHandler': {
-                const eui64 = this.eui64ToNodeId.get(frame.sender);
-                const handled = this.waitress.resolve({
-                    address: frame.sender,
-                    payload: frame.message,
-                    frame: frame.apsFrame,
-                });
+                const apsFrame: EmberApsFrame = frame.apsFrame;
 
-                if (!handled) {
+                if (apsFrame.profileId == Zdo.ZDO_PROFILE_ID && apsFrame.clusterId >= 0x8000 /* response only */) {
+                    const zdoResponse = Zdo.Buffalo.readResponse(true, apsFrame.clusterId, frame.message);
+
+                    if (apsFrame.clusterId === Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE) {
+                        // special case to properly resolve a NETWORK_ADDRESS_RESPONSE following a NETWORK_ADDRESS_REQUEST (based on EUI64 from ZDO payload)
+                        // NOTE: if response has invalid status (no EUI64 available), response waiter will eventually time out
+                        /* istanbul ignore else */
+                        if (Zdo.Buffalo.checkStatus<Zdo.ClusterId.NETWORK_ADDRESS_RESPONSE>(zdoResponse)) {
+                            const eui64 = zdoResponse[1].eui64;
+
+                            // update cache with new network address
+                            this.eui64ToNodeId.set(eui64, frame.sender);
+
+                            this.waitress.resolve({
+                                address: eui64,
+                                payload: frame.message,
+                                frame: apsFrame,
+                                zdoResponse,
+                            });
+                        }
+                    } else {
+                        this.waitress.resolve({
+                            address: frame.sender,
+                            payload: frame.message,
+                            frame: apsFrame,
+                            zdoResponse,
+                        });
+                    }
+
+                    // always pass ZDO to bubble up to controller
                     this.emit('incomingMessage', {
                         messageType: frame.type,
-                        apsFrame: frame.apsFrame,
+                        apsFrame,
                         lqi: frame.lastHopLqi,
                         rssi: frame.lastHopRssi,
                         sender: frame.sender,
                         bindingIndex: frame.bindingIndex,
                         addressIndex: frame.addressIndex,
                         message: frame.message,
-                        senderEui64: eui64,
+                        senderEui64: this.eui64ToNodeId.get(frame.sender),
+                        zdoResponse,
                     });
+                } else {
+                    const handled = this.waitress.resolve({
+                        address: frame.sender,
+                        payload: frame.message,
+                        frame: apsFrame,
+                    });
+
+                    if (!handled) {
+                        this.emit('incomingMessage', {
+                            messageType: frame.type,
+                            apsFrame,
+                            lqi: frame.lastHopLqi,
+                            rssi: frame.lastHopRssi,
+                            sender: frame.sender,
+                            bindingIndex: frame.bindingIndex,
+                            addressIndex: frame.addressIndex,
+                            message: frame.message,
+                            senderEui64: this.eui64ToNodeId.get(frame.sender),
+                        });
+                    }
                 }
                 break;
             }
@@ -412,7 +459,7 @@ export class Driver extends EventEmitter {
                 const status = frame.status;
                 if (status != 0) {
                     // send failure
-                    logger.debug(`Delivery failed for ${JSON.stringify(frame)}.`, NS);
+                    logger.debug(() => `Delivery failed for ${JSON.stringify(frame)}.`, NS);
                 } else {
                     // send success
                     // If there was a message to the group and this group is not known,
@@ -550,7 +597,7 @@ export class Driver extends EventEmitter {
         }
 
         this.eui64ToNodeId.delete(ieee.toString());
-        this.emit('deviceLeft', [nwk, ieee]);
+        this.emit('deviceLeft', nwk, ieee);
     }
 
     private async resetMfgId(mfgId: number): Promise<void> {
@@ -566,7 +613,7 @@ export class Driver extends EventEmitter {
         }
 
         for (const rec of IEEE_PREFIX_MFG_ID) {
-            if (Buffer.from((ieee as EmberEUI64).value).indexOf(Buffer.from(rec.prefix)) == 0) {
+            if (Buffer.from(ieee.value).indexOf(Buffer.from(rec.prefix)) == 0) {
                 // set ManufacturerCode
                 logger.debug(`handleNodeJoined: change ManufacturerCode for ieee ${ieee} to ${rec.mfgId}`, NS);
                 // eslint-disable-next-line @typescript-eslint/no-floating-promises
@@ -576,7 +623,7 @@ export class Driver extends EventEmitter {
         }
 
         this.eui64ToNodeId.set(ieee.toString(), nwk);
-        this.emit('deviceJoined', [nwk, ieee]);
+        this.emit('deviceJoined', nwk, ieee);
     }
 
     public setNode(nwk: number, ieee: EmberEUI64 | number[]): void {
@@ -725,45 +772,6 @@ export class Driver extends EventEmitter {
         return frame;
     }
 
-    public async zdoRequest(
-        networkAddress: number,
-        requestCmd: EmberZDOCmd,
-        responseCmd: EmberZDOCmd,
-        params: ParamsDesc,
-    ): Promise<EZSPZDOResponseFrameData> {
-        const requestName = EmberZDOCmd.valueName(EmberZDOCmd, requestCmd);
-        const responseName = EmberZDOCmd.valueName(EmberZDOCmd, responseCmd);
-
-        logger.debug(`ZDO ${requestName} params: ${JSON.stringify(params)}`, NS);
-
-        const frame = this.makeApsFrame(requestCmd as number, false);
-        const payload = this.makeZDOframe(requestCmd as number, {transId: frame.sequence, ...params});
-        const waiter = this.waitFor(networkAddress, responseCmd as number, frame.sequence);
-
-        try {
-            const res = await this.request(networkAddress, frame, payload);
-
-            if (!res) {
-                throw Error('zdoRequest>request error');
-            }
-
-            const response = await waiter.start().promise;
-
-            logger.debug(`${responseName}  frame: ${JSON.stringify(response.payload)}`, NS);
-
-            const result = new EZSPZDOResponseFrameData(responseCmd as number, response.payload);
-
-            logger.debug(`${responseName} parsed: ${JSON.stringify(result)}`, NS);
-
-            return result;
-        } catch (e) {
-            this.waitress.remove(waiter.ID);
-            logger.debug(`zdoRequest error: ${e}`, NS);
-
-            throw e;
-        }
-    }
-
     public async networkIdToEUI64(nwk: number): Promise<EmberEUI64> {
         for (const [eUI64, value] of this.eui64ToNodeId) {
             if (value === nwk) return new EmberEUI64(eUI64);
@@ -805,7 +813,7 @@ export class Driver extends EventEmitter {
     }
 
     public async permitJoining(seconds: number): Promise<EZSPFrameData> {
-        return this.ezsp.execCommand('permitJoining', {duration: seconds});
+        return await this.ezsp.execCommand('permitJoining', {duration: seconds});
     }
 
     public makeZDOframe(name: string | number, params: ParamsDesc): Buffer {
@@ -830,16 +838,18 @@ export class Driver extends EventEmitter {
             inputClusterList: inputClusters,
             outputClusterList: outputClusters,
         });
-        logger.debug(`Ezsp adding endpoint: ${JSON.stringify(res)}`, NS);
+        logger.debug(() => `Ezsp adding endpoint: ${JSON.stringify(res)}`, NS);
     }
 
     public waitFor(
-        address: number,
+        address: number | string,
         clusterId: number,
         sequence: number,
         timeout = 10000,
-    ): {start: () => {promise: Promise<EmberFrame>; ID: number}; ID: number} {
-        return this.waitress.waitFor({address, clusterId, sequence}, timeout);
+    ): ReturnType<typeof this.waitress.waitFor> & {cancel: () => void} {
+        const waiter = this.waitress.waitFor({address, clusterId, sequence}, timeout);
+
+        return {...waiter, cancel: () => this.waitress.remove(waiter.ID)};
     }
 
     private waitressTimeoutFormatter(matcher: EmberWaitressMatcher, timeout: number): string {
@@ -891,7 +901,7 @@ export class Driver extends EventEmitter {
 
     public async getKey(keyType: EmberKeyType): Promise<EZSPFrameData> {
         if (this.ezsp.ezspV < 13) {
-            return this.ezsp.execCommand('getKey', {keyType});
+            return await this.ezsp.execCommand('getKey', {keyType});
         } else {
             // Mapping EmberKeyType to SecManKeyType (ezsp13)
             const SecManKeyType = {

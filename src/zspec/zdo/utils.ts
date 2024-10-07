@@ -3,19 +3,18 @@ import {MACCapabilityFlags, ServerMask} from './definition/tstypes';
 
 /**
  * Get a the response cluster ID corresponding to a request.
- * May be null if cluster does not have a response.
  * @param requestClusterId
- * @returns
+ * @returns Response cluster ID or undefined if unknown/invalid
  */
-export const getResponseClusterId = (requestClusterId: ClusterId): ClusterId | null => {
+export const getResponseClusterId = (requestClusterId: ClusterId): ClusterId | undefined => {
     if (0x8000 < requestClusterId || requestClusterId === ClusterId.END_DEVICE_ANNOUNCE) {
-        return null;
+        return undefined;
     }
 
     const responseClusterId = requestClusterId + 0x8000;
 
     if (ClusterId[responseClusterId] == undefined) {
-        return null;
+        return undefined;
     }
 
     return responseClusterId;
@@ -57,7 +56,7 @@ export const getServerMask = (serverMask: number): ServerMask => {
         networkManager: (serverMask & 0x40) >> 6,
         reserved1: (serverMask & 0x80) >> 7,
         reserved2: (serverMask & 0x100) >> 8,
-        stackComplianceResivion: (serverMask & 0xfe00) >> 9,
+        stackComplianceRevision: (serverMask & 0xfe00) >> 9,
     };
 };
 
@@ -72,6 +71,6 @@ export const createServerMask = (serverMask: ServerMask): number => {
         ((serverMask.networkManager << 6) & 0x40) |
         ((serverMask.reserved1 << 7) & 0x80) |
         ((serverMask.reserved2 << 8) & 0x100) |
-        ((serverMask.stackComplianceResivion << 9) & 0xfe00)
+        ((serverMask.stackComplianceRevision << 9) & 0xfe00)
     );
 };

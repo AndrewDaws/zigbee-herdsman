@@ -6,6 +6,8 @@ import * as Models from '../models';
 import {logger} from '../utils/logger';
 import {BroadcastAddress} from '../zspec/enums';
 import * as Zcl from '../zspec/zcl';
+import * as Zdo from '../zspec/zdo';
+import * as ZdoTypes from '../zspec/zdo/definition/tstypes';
 import * as AdapterEvents from './events';
 import * as TsType from './tstype';
 
@@ -14,14 +16,14 @@ const NS = 'zh:adapter';
 interface AdapterEventMap {
     deviceJoined: [payload: AdapterEvents.DeviceJoinedPayload];
     zclPayload: [payload: AdapterEvents.ZclPayload];
+    zdoResponse: [clusterId: Zdo.ClusterId, response: ZdoTypes.GenericZdoResponse];
     disconnected: [];
-    deviceAnnounce: [payload: AdapterEvents.DeviceAnnouncePayload];
     deviceLeave: [payload: AdapterEvents.DeviceLeavePayload];
-    networkAddress: [payload: AdapterEvents.NetworkAddressPayload];
 }
 
 abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
-    public readonly greenPowerGroup = 0x0b84;
+    public hasZdoMessageOverhead: boolean;
+    public manufacturerID: Zcl.ManufacturerCode;
     protected networkOptions: TsType.NetworkOptions;
     protected adapterOptions: TsType.AdapterOptions;
     protected serialPortOptions: TsType.SerialPortOptions;
@@ -34,6 +36,8 @@ abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
         adapterOptions: TsType.AdapterOptions,
     ) {
         super();
+        this.hasZdoMessageOverhead = true;
+        this.manufacturerID = Zcl.ManufacturerCode.RESERVED_10;
         this.networkOptions = networkOptions;
         this.adapterOptions = adapterOptions;
         this.serialPortOptions = serialPortOptions;
@@ -55,10 +59,24 @@ abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
         const {ZiGateAdapter} = await import('./zigate/adapter');
         const {EZSPAdapter} = await import('./ezsp/adapter');
         const {EmberAdapter} = await import('./ember/adapter');
-        type AdapterImplementation = typeof ZStackAdapter | typeof DeconzAdapter | typeof ZiGateAdapter | typeof EZSPAdapter | typeof EmberAdapter;
+        const {ZBOSSAdapter} = await import('./zboss/adapter');
+        type AdapterImplementation =
+            | typeof ZStackAdapter
+            | typeof DeconzAdapter
+            | typeof ZiGateAdapter
+            | typeof EZSPAdapter
+            | typeof EmberAdapter
+            | typeof ZBOSSAdapter;
 
         let adapters: AdapterImplementation[];
-        const adapterLookup = {zstack: ZStackAdapter, deconz: DeconzAdapter, zigate: ZiGateAdapter, ezsp: EZSPAdapter, ember: EmberAdapter};
+        const adapterLookup = {
+            zstack: ZStackAdapter,
+            deconz: DeconzAdapter,
+            zigate: ZiGateAdapter,
+            ezsp: EZSPAdapter,
+            ember: EmberAdapter,
+            zboss: ZBOSSAdapter,
+        };
 
         if (serialPortOptions.adapter && serialPortOptions.adapter !== 'auto') {
             if (adapterLookup[serialPortOptions.adapter]) {
@@ -171,7 +189,7 @@ abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
 
     public abstract stop(): Promise<void>;
 
-    public abstract getCoordinator(): Promise<TsType.Coordinator>;
+    public abstract getCoordinatorIEEE(): Promise<string>;
 
     public abstract getCoordinatorVersion(): Promise<TsType.CoordinatorVersion>;
 
@@ -182,8 +200,6 @@ abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
     public abstract backup(ieeeAddressesInDatabase: string[]): Promise<Models.Backup>;
 
     public abstract getNetworkParameters(): Promise<TsType.NetworkParameters>;
-
-    public abstract changeChannel(newChannel: number): Promise<void>;
 
     public abstract setTransmitPower(value: number): Promise<void>;
 
@@ -204,39 +220,29 @@ abstract class Adapter extends events.EventEmitter<AdapterEventMap> {
      * ZDO
      */
 
+    public abstract sendZdo(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: Zdo.ClusterId,
+        payload: Buffer,
+        disableResponse: true,
+    ): Promise<void>;
+    public abstract sendZdo<K extends keyof ZdoTypes.RequestToResponseMap>(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: K,
+        payload: Buffer,
+        disableResponse: false,
+    ): Promise<ZdoTypes.RequestToResponseMap[K]>;
+    public abstract sendZdo<K extends keyof ZdoTypes.RequestToResponseMap>(
+        ieeeAddress: string,
+        networkAddress: number,
+        clusterId: K,
+        payload: Buffer,
+        disableResponse: boolean,
+    ): Promise<ZdoTypes.RequestToResponseMap[K] | void>;
+
     public abstract permitJoin(seconds: number, networkAddress?: number): Promise<void>;
-
-    public abstract lqi(networkAddress: number): Promise<TsType.LQI>;
-
-    public abstract routingTable(networkAddress: number): Promise<TsType.RoutingTable>;
-
-    public abstract nodeDescriptor(networkAddress: number): Promise<TsType.NodeDescriptor>;
-
-    public abstract activeEndpoints(networkAddress: number): Promise<TsType.ActiveEndpoints>;
-
-    public abstract simpleDescriptor(networkAddress: number, endpointID: number): Promise<TsType.SimpleDescriptor>;
-
-    public abstract bind(
-        destinationNetworkAddress: number,
-        sourceIeeeAddress: string,
-        sourceEndpoint: number,
-        clusterID: number,
-        destinationAddressOrGroup: string | number,
-        type: 'endpoint' | 'group',
-        destinationEndpoint?: number,
-    ): Promise<void>;
-
-    public abstract unbind(
-        destinationNetworkAddress: number,
-        sourceIeeeAddress: string,
-        sourceEndpoint: number,
-        clusterID: number,
-        destinationAddressOrGroup: string | number,
-        type: 'endpoint' | 'group',
-        destinationEndpoint?: number,
-    ): Promise<void>;
-
-    public abstract removeDevice(networkAddress: number, ieeeAddr: string): Promise<void>;
 
     /**
      * ZCL
